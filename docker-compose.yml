@@ -62,7 +62,7 @@ services:
     command: python processor/sentiment_engine.py
     restart: unless-stopped
     # --- THIS ACTIVATES YOUR RTX 5050 ---
-deploy:
+    deploy:
       resources:
         reservations:
           devices:
