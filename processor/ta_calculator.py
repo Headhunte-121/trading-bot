@@ -1,85 +1,114 @@
-import sqlite3
 import pandas as pd
 import pandas_ta as ta
+import sqlite3
 import os
+import sys
 
-# Define the path to the database
-DB_NAME = "trade_history.db"
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, DB_NAME)
+# Ensure shared package is available
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import get_db_connection
 
 def calculate_indicators():
-    """Calculates RSI and Lower Bollinger Band for each symbol and updates the database."""
-    print(f"Connecting to database at {DB_PATH}...")
+    """Calculates RSI and Lower Bollinger Band for each symbol and updates the database using a sliding window."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=15)
+        # Get list of symbols
+        cursor.execute("SELECT DISTINCT symbol FROM market_data")
+        symbols = [row[0] for row in cursor.fetchall()]
 
-        # Read market data
-        # We need enough history for calculation. The user said "Pull ALL historical data".
-        query = "SELECT symbol, timestamp, close FROM market_data ORDER BY timestamp ASC"
-        df = pd.read_sql_query(query, conn)
-
-        if df.empty:
-            print("No market data found.")
-            return
-
-        # Initialize lists to store results
-        results = []
-
-        # Process each symbol independently
-        symbols = df['symbol'].unique()
         print(f"Processing {len(symbols)} symbols: {symbols}")
 
         for symbol in symbols:
-            # Create a copy to avoid SettingWithCopyWarning
-            symbol_df = df[df['symbol'] == symbol].copy()
+            # Get last processed timestamp
+            cursor.execute("SELECT MAX(timestamp) FROM technical_indicators WHERE symbol = ?", (symbol,))
+            result = cursor.fetchone()
+            last_ts = result[0] if result else None
 
-            # Ensure timestamp is sorted
-            symbol_df = symbol_df.sort_values('timestamp')
+            df = pd.DataFrame()
 
-            if len(symbol_df) < 14:
-                print(f"Not enough data for {symbol} (need at least 14 rows). Skipping.")
+            if last_ts:
+                # Fetch lookback (200 rows) for warm-up + new data
+                # Using 2 separate queries to avoid complex UNION syntax issues and ensure correct sorting
+                query_lookback = """
+                    SELECT * FROM market_data
+                    WHERE symbol = ? AND timestamp <= ?
+                    ORDER BY timestamp DESC LIMIT 200
+                """
+                df_lookback = pd.read_sql_query(query_lookback, conn, params=(symbol, last_ts))
+
+                query_new = """
+                    SELECT * FROM market_data
+                    WHERE symbol = ? AND timestamp > ?
+                    ORDER BY timestamp ASC
+                """
+                df_new = pd.read_sql_query(query_new, conn, params=(symbol, last_ts))
+
+                if df_new.empty:
+                    # No new data to process
+                    continue
+
+                # Combine: lookback (reversed to be ASC) + new
+                df_lookback = df_lookback.iloc[::-1] # Reverse to chronological order
+                df = pd.concat([df_lookback, df_new])
+            else:
+                # Full load if no history
+                query = "SELECT * FROM market_data WHERE symbol = ? ORDER BY timestamp ASC"
+                df = pd.read_sql_query(query, conn, params=(symbol,))
+
+            if df.empty or len(df) < 14:
+                print(f"Not enough data for {symbol}. Skipping.")
                 continue
+
+            # Ensure columns are float for calculation
+            # SQLite might return strings if declared as REAL but inserted as text? No, REAL is float.
+            # But safe to cast.
+            # pandas-ta needs 'close'
 
             # Calculate RSI (14)
-            # This returns a Series named 'RSI_14' by default
-            rsi = symbol_df.ta.rsi(length=14)
-            if rsi is None:
-                 print(f"RSI calculation failed for {symbol}")
-                 continue
+            try:
+                rsi = df.ta.rsi(length=14)
+            except Exception as e:
+                print(f"RSI error for {symbol}: {e}")
+                continue
 
             # Calculate Bollinger Bands (20, 2)
-            # This returns a DataFrame with multiple columns
-            bb = symbol_df.ta.bbands(length=20, std=2)
-            if bb is None:
-                print(f"BB calculation failed for {symbol}")
+            try:
+                bb = df.ta.bbands(length=20, std=2)
+            except Exception as e:
+                print(f"BB error for {symbol}: {e}")
                 continue
 
-            # Find the Lower Band column (starts with BBL)
+            if rsi is None or bb is None:
+                continue
+
+            # Find Lower Band column
             bbl_col = next((col for col in bb.columns if col.startswith('BBL')), None)
-
             if not bbl_col:
-                print(f"Could not find Lower Bollinger Band column for {symbol}. Columns: {bb.columns}")
+                print(f"Lower BB column not found for {symbol}. Columns: {bb.columns}")
                 continue
 
-            # Merge indicators back to the symbol_df
-            # We use the index to align (pandas handles this)
-            symbol_df['rsi_14'] = rsi
-            symbol_df['lower_bb'] = bb[bbl_col]
+            df['rsi_14'] = rsi
+            df['lower_bb'] = bb[bbl_col]
 
-            # Filter for rows where both indicators are valid (not NaN)
-            valid_rows = symbol_df.dropna(subset=['rsi_14', 'lower_bb'])
+            # Filter for rows to insert
+            if last_ts:
+                # Only keep rows strictly newer than last_ts
+                # We use string comparison which works for ISO8601
+                df_to_insert = df[df['timestamp'] > last_ts].copy()
+            else:
+                df_to_insert = df.copy()
 
-            if valid_rows.empty:
-                print(f"No valid indicator data for {symbol} after filtering NaNs.")
+            # Drop NaNs in target columns (warm-up period results might be NaN)
+            df_to_insert = df_to_insert.dropna(subset=['rsi_14', 'lower_bb'])
+
+            if df_to_insert.empty:
                 continue
 
             # Prepare data for insertion
-            # The table expects: symbol, timestamp, rsi_14, lower_bb
-            for _, row in valid_rows.iterrows():
+            results = []
+            for _, row in df_to_insert.iterrows():
                 results.append((
                     row['symbol'],
                     row['timestamp'],
@@ -87,32 +116,24 @@ def calculate_indicators():
                     float(row['lower_bb'])
                 ))
 
-        if not results:
-            print("No valid data to insert.")
-            return
+            print(f"Inserting {len(results)} new rows for {symbol}...")
 
-        print(f"Inserting {len(results)} rows into technical_indicators...")
+            # Use executemany for batch insertion
+            try:
+                cursor.executemany("""
+                    INSERT OR REPLACE INTO technical_indicators (symbol, timestamp, rsi_14, lower_bb)
+                    VALUES (?, ?, ?, ?)
+                """, results)
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                 print(f"Insertion failed for {symbol}: {e}")
 
-        cursor = conn.cursor()
-
-        # Use INSERT OR REPLACE to handle composite primary keys
-        cursor.executemany("""
-            INSERT OR REPLACE INTO technical_indicators (symbol, timestamp, rsi_14, lower_bb)
-            VALUES (?, ?, ?, ?)
-        """, results)
-
-        conn.commit()
-        print("Data inserted successfully.")
-
-    except sqlite3.Error as e:
-        print(f"SQLite error: {e}")
     except Exception as e:
         print(f"An error occurred: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 if __name__ == "__main__":
     calculate_indicators()
