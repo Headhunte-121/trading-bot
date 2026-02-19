@@ -1,0 +1,126 @@
+
+services:
+  # --- Database Initialization ---
+  init-db:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: python shared/schema.py
+    restart: "no"
+
+  # --- Ingestion Services ---
+  market_harvester:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python ingestor/market_harvester.py; sleep 3600; done"
+    restart: unless-stopped
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+  news_scraper:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python ingestor/news_scraper.py; sleep 3600; done"
+    restart: unless-stopped
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+  # --- Processing Services ---
+  ta_calculator:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python processor/ta_calculator.py; sleep 3600; done"
+    restart: unless-stopped
+    depends_on:
+      market_harvester:
+        condition: service_started
+      init-db:
+        condition: service_completed_successfully
+
+  sentiment_engine:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python processor/sentiment_engine.py; sleep 3600; done"
+    restart: unless-stopped
+    depends_on:
+      news_scraper:
+        condition: service_started
+      init-db:
+        condition: service_completed_successfully
+
+  # --- Strategy Services ---
+  strategy_engine:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python strategy/mean_reversion.py; sleep 300; done"
+    restart: unless-stopped
+    depends_on:
+      ta_calculator:
+        condition: service_started
+      sentiment_engine:
+        condition: service_started
+      init-db:
+        condition: service_completed_successfully
+
+  # --- Execution Services ---
+  risk_manager:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python execution/risk_manager.py; sleep 300; done"
+    restart: unless-stopped
+    depends_on:
+      strategy_engine:
+        condition: service_started
+      init-db:
+        condition: service_completed_successfully
+
+  alpaca_executor:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: sh -c "while true; do python execution/alpaca_executor.py; sleep 60; done"
+    restart: unless-stopped
+    depends_on:
+      risk_manager:
+        condition: service_started
+      init-db:
+        condition: service_completed_successfully
+
+  # --- Dashboard ---
+  dashboard:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
