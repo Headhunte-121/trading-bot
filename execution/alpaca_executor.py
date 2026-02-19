@@ -17,7 +17,7 @@ def process_signals():
     api_secret = os.getenv("APCA_API_SECRET_KEY")
     base_url = os.getenv("APCA_API_BASE_URL")
 
-    if not all([api_key, api_secret, base_url]):
+    if not all():
         print("Error: Alpaca environment variables not set.")
         return
 
@@ -36,13 +36,16 @@ def process_signals():
         cursor.execute("SELECT id, symbol, size, stop_loss FROM trade_signals WHERE status = 'SIZED'")
         signals = cursor.fetchall()
 
-        print(f"Found {len(signals)} signals to process.")
+        if len(signals) > 0:
+            print(f"Found {len(signals)} signals to process.")
 
         for signal in signals:
-            signal_id = signal["id"]
-            symbol = signal["symbol"]
-            qty = signal["size"]
-            stop_loss_price = signal["stop_loss"]
+            signal_id = signal
+            symbol = signal
+            qty = signal
+            
+            # CRITICAL FIX: Round stop loss to 2 decimal places so Alpaca doesn't reject it
+            stop_loss_price = round(float(signal), 2)
 
             print(f"Processing signal {signal_id}: BUY {qty} {symbol} with SL {stop_loss_price}")
 
@@ -58,34 +61,28 @@ def process_signals():
                     stop_loss={'stop_price': stop_loss_price}
                 )
 
-                print(f"Order submitted: {order.id}")
+                print(f"✅ Order submitted successfully: {order.id}")
 
-                # Wait for execution
+                # CRITICAL FIX: Immediately mark as SUBMITTED so we don't accidentally buy it again!
+                cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED' WHERE id = ?", (signal_id,))
+                conn.commit()
+
+                # Wait for execution to see if it fills instantly
                 time.sleep(2)
 
                 # Retrieve updated order details
                 updated_order = api.get_order(order.id)
-
-                # Check execution status
                 fill_price = updated_order.filled_avg_price
                 filled_qty = updated_order.filled_qty
 
-                if fill_price is None:
-                    print(f"Order {order.id} not filled yet. Status: {updated_order.status}. Skipping logging for now.")
-                    # We leave it as SIZED? Or mark as SUBMITTED?
-                    # The current schema has 'EXECUTED'.
-                    # Ideally we should have 'SUBMITTED' state.
-                    # But sticking to existing schema, we just don't update if not filled.
-                    # Or we wait longer?
-                    # For now, we skip update.
+                if fill_price is None or float(filled_qty) == 0:
+                    print(f"Order {order.id} is accepted but not filled yet (Market closed or low volume).")
                     continue
 
                 filled_at = updated_order.filled_at
 
                 # Timestamp handling
                 if isinstance(filled_at, str):
-                    # Parse and ensure UTC
-                    # Example: '2023-10-27T15:00:00.123456Z'
                     dt = datetime.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
                 elif isinstance(filled_at, datetime.datetime):
                     dt = filled_at
@@ -95,27 +92,23 @@ def process_signals():
                 dt = dt.astimezone(datetime.timezone.utc)
                 formatted_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                # Update trade_signals status
-                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
-
-                # Log executed trade
+                # Log executed trade for the Dashboard
                 cursor.execute("""
                     INSERT INTO executed_trades (symbol, timestamp, price, qty, side)
                     VALUES (?, ?, ?, ?, ?)
                 """, (symbol, formatted_timestamp, float(fill_price), float(filled_qty), 'buy'))
-
+                
+                # Final Status Update
+                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
                 conn.commit()
-                print(f"Signal {signal_id} executed and logged.")
+                
+                print(f"💰 Signal {signal_id} EXECUTED and logged! 💰")
 
             except Exception as e:
-                print(f"Error processing signal {signal_id}: {e}")
-                # Don't rollback other signals if one fails, but current transaction might be aborted?
-                # conn.commit() is per signal loop.
-                # If exception, we catch it and continue loop.
-                # But we might need to rollback specific cursor if it was in transaction?
-                # sqlite3 implicit transaction starts at first command.
-                # if commit failed, we rollback.
-                conn.rollback()
+                print(f"❌ Error processing signal {signal_id} with Alpaca: {e}")
+                # Mark as FAILED so it doesn't get stuck in a loop trying to submit bad data
+                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                conn.commit()
 
     except Exception as e:
         print(f"Global error: {e}")
