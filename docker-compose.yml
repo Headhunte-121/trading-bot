@@ -59,7 +59,7 @@ services:
     env_file:
       - .env
     # Changed from 3600 to 300 (5 minutes)
-    command: sh -c "while true; do python processor/sentiment_engine.py; sleep 300; done"
+    command: python processor/sentiment_engine.py
     restart: unless-stopped
     # --- THIS ACTIVATES YOUR RTX 5050 ---
     deploy:
