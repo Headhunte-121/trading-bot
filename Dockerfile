@@ -1,12 +1,7 @@
-# Use an official Python runtime as a parent image
 FROM python:3.12-slim
-
-# Set the working directory to /app
 WORKDIR /app
 
-# Install system dependencies
-# build-essential, gcc, g++ for compiling packages
-# git for installing python packages from git repositories (if needed)
+# 1. System Tools (Cached)
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
@@ -14,17 +9,35 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container at /app
+# 2. THE "HEAVY HITTER" LAYER
+# We install ALL the big libraries here manually. 
+# As long as you don't edit THIS specific block, Docker will never download these again.
+# Even if you change requirements.txt later, this layer stays "Frozen".
+RUN pip install --no-cache-dir \
+    torch==2.1.0 \
+    transformers \
+    pandas \
+    pandas-ta \
+    numpy \
+    scipy \
+    bitsandbytes \
+    accelerate \
+    yfinance \
+    alpaca-trade-api \
+    finnhub-python \
+    --default-timeout=2000
+
+# 3. The "Delta" Layer
+# Now we copy the file. If you add a new library (like 'requests' or 'beautifulsoup'),
+# Docker detects the change here.
 COPY requirements.txt .
 
-# Install any needed packages specified in requirements.txt
+# 4. Install only what's missing
+# Pip is smart. It will look at requirements.txt, see that Torch/Pandas/etc 
+# are already installed from Step 2, and say "Requirement already satisfied."
+# It will ONLY download the new stuff you added.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code into the container at /app
 COPY . .
-
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
-
-# Run the command specified in docker-compose.yml
 CMD ["python", "shared/schema.py"]
