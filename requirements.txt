@@ -5,7 +5,8 @@ requests
 
 # Data Processing
 pandas
-pandas-ta
+# Use pandas-ta development branch for compatibility with newer pandas/python versions
+git+https://github.com/twopirllc/pandas-ta.git@development
 
 # AI/NLP
 transformers
