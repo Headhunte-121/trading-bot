@@ -62,13 +62,13 @@ services:
     command: python processor/sentiment_engine.py
     restart: unless-stopped
     # --- THIS ACTIVATES YOUR RTX 5050 ---
-    deploy:
+deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities:
+              capabilities: [gpu]  # <--- Added [gpu] here
     depends_on:
       news_scraper:
         condition: service_started
