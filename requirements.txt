@@ -1,4 +1,6 @@
 yfinance
 pandas
+transformers
+torch
 pandas-ta
 requests
