@@ -16,18 +16,12 @@ def run_mean_reversion():
     cursor = conn.cursor()
 
     try:
-        # Define cutoff time to avoid look-ahead bias (current partial candle)
-        # Assuming 1h interval, we exclude data from the last hour.
-        cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        # CHANGED: Cutoff time is now 5 minutes instead of 1 hour!
+        # This prevents it from ignoring fresh signals.
+        cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
         cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         # Step 1: Find candidates
-        # Conditions:
-        # - market_data.close < technical_indicators.lower_bb
-        # - technical_indicators.rsi_14 < 30
-        # - No existing signal in trade_signals for this symbol/timestamp
-        # - timestamp < cutoff_iso (Ensure candle is completed)
-
         query_candidates = """
             SELECT t.symbol, t.timestamp
             FROM technical_indicators t
@@ -36,7 +30,7 @@ def run_mean_reversion():
             WHERE m.close < t.lower_bb
             AND t.rsi_14 < 30
             AND s.id IS NULL
-            AND t.timestamp < ?
+            AND t.timestamp <= ?
         """
 
         cursor.execute(query_candidates, (cutoff_iso,))
@@ -45,41 +39,39 @@ def run_mean_reversion():
         print(f"Found {len(candidates)} potential candidates.")
 
         for row in candidates:
-            # Handle tuple/Row
             if isinstance(row, sqlite3.Row):
-                symbol = row['symbol']
-                timestamp = row['timestamp']
+                symbol = row
+                timestamp = row
             else:
-                symbol = row[0]
-                timestamp = row[1]
+                symbol = row
+                timestamp = row
 
-            # Step 2: Check news sentiment
-            # Average sentiment score over the last 5 hours relative to the candidate timestamp
-
+            # Step 2: Check news sentiment (Look back 12 hours instead of 5 for more context)
             query_news = """
                 SELECT AVG(sentiment_score), COUNT(*)
                 FROM raw_news
                 WHERE symbol = ?
-                AND timestamp > datetime(?, '-5 hours')
+                AND timestamp > datetime(?, '-12 hours')
                 AND timestamp <= ?
             """
 
             cursor.execute(query_news, (symbol, timestamp, timestamp))
             result = cursor.fetchone()
 
-            avg_sentiment = result[0]
-            count = result[1]
+            avg_sentiment = result
+            count = result
 
             # Step 3: Insert signal if conditions met
-            # condition: avg sentiment > 0
-
+            # condition: avg sentiment > 0 (News must be positive to buy the dip!)
             if count > 0 and avg_sentiment is not None and avg_sentiment > 0:
-                print(f"Generating BUY signal for {symbol} at {timestamp} (Sentiment: {avg_sentiment:.2f})")
+                print(f"⭐⭐ BUY SIGNAL DETECTED for {symbol} at {timestamp} (Sentiment: {avg_sentiment:.2f}) ⭐⭐")
                 insert_query = """
                     INSERT INTO trade_signals (symbol, timestamp, signal_type, status, size, stop_loss)
                     VALUES (?, ?, 'BUY', 'PENDING', NULL, NULL)
                 """
                 cursor.execute(insert_query, (symbol, timestamp))
+            else:
+                print(f"Ignored {symbol} at {timestamp}. RSI was low, but sentiment was negative ({avg_sentiment}).")
 
         conn.commit()
         print("Strategy cycle completed.")
