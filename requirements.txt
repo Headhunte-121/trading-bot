@@ -1,7 +1,21 @@
+# Data Ingestion
 yfinance
+beautifulsoup4
+requests
+
+# Data Processing
 pandas
-alpaca-trade-api>=3.2.0
+pandas-ta
+
+# AI/NLP
 transformers
 torch
-pandas-ta
-requests
+
+# Execution
+alpaca-trade-api
+
+# Dashboard
+streamlit
+
+# Environment
+python-dotenv
