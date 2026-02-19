@@ -1,29 +1,32 @@
 import sqlite3
 import os
+import sys
+import datetime
 
-# Default path relative to this script
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
+# Ensure shared package is available
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import get_db_connection
 
-def run_mean_reversion(db_path=DB_PATH):
+def run_mean_reversion():
     """
     Executes the mean reversion strategy logic.
     """
-    conn = None
-    try:
-        # Ensure the directory exists if we are using the default path or a path that implies a directory structure
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-             os.makedirs(db_dir, exist_ok=True)
+    print("Running Mean Reversion Strategy...")
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+    try:
+        # Define cutoff time to avoid look-ahead bias (current partial candle)
+        # Assuming 1h interval, we exclude data from the last hour.
+        cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         # Step 1: Find candidates
         # Conditions:
         # - market_data.close < technical_indicators.lower_bb
         # - technical_indicators.rsi_14 < 30
         # - No existing signal in trade_signals for this symbol/timestamp
+        # - timestamp < cutoff_iso (Ensure candle is completed)
 
         query_candidates = """
             SELECT t.symbol, t.timestamp
@@ -33,17 +36,25 @@ def run_mean_reversion(db_path=DB_PATH):
             WHERE m.close < t.lower_bb
             AND t.rsi_14 < 30
             AND s.id IS NULL
+            AND t.timestamp < ?
         """
 
-        cursor.execute(query_candidates)
+        cursor.execute(query_candidates, (cutoff_iso,))
         candidates = cursor.fetchall()
 
-        for symbol, timestamp in candidates:
+        print(f"Found {len(candidates)} potential candidates.")
+
+        for row in candidates:
+            # Handle tuple/Row
+            if isinstance(row, sqlite3.Row):
+                symbol = row['symbol']
+                timestamp = row['timestamp']
+            else:
+                symbol = row[0]
+                timestamp = row[1]
+
             # Step 2: Check news sentiment
             # Average sentiment score over the last 5 hours relative to the candidate timestamp
-
-            # SQLite datetime modifier: datetime(timestamp, '-5 hours')
-            # We assume timestamp is in a format SQLite understands (ISO8601)
 
             query_news = """
                 SELECT AVG(sentiment_score), COUNT(*)
@@ -60,10 +71,10 @@ def run_mean_reversion(db_path=DB_PATH):
             count = result[1]
 
             # Step 3: Insert signal if conditions met
-            # condition: avg sentiment > 0 (and implies count > 0, since avg of nothing is NULL)
+            # condition: avg sentiment > 0
 
             if count > 0 and avg_sentiment is not None and avg_sentiment > 0:
-                print(f"Generating BUY signal for {symbol} at {timestamp}")
+                print(f"Generating BUY signal for {symbol} at {timestamp} (Sentiment: {avg_sentiment:.2f})")
                 insert_query = """
                     INSERT INTO trade_signals (symbol, timestamp, signal_type, status, size, stop_loss)
                     VALUES (?, ?, 'BUY', 'PENDING', NULL, NULL)
@@ -71,12 +82,14 @@ def run_mean_reversion(db_path=DB_PATH):
                 cursor.execute(insert_query, (symbol, timestamp))
 
         conn.commit()
+        print("Strategy cycle completed.")
 
     except sqlite3.Error as e:
         print(f"Database error: {e}")
+    except Exception as e:
+        print(f"Error: {e}")
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 if __name__ == "__main__":
     run_mean_reversion()

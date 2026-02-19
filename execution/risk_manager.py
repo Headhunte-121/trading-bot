@@ -1,16 +1,16 @@
 import sqlite3
 import os
+import math
+import sys
+
+# Ensure shared package is available
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import get_db_connection
 
 # Configuration
 ACCOUNT_SIZE = 100000
 RISK_PCT = 0.01
 STOP_LOSS_PCT = 0.02
-
-# Database Path
-DB_NAME = "trade_history.db"
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, DB_NAME)
 
 def calculate_position_size(close_price):
     """
@@ -19,24 +19,24 @@ def calculate_position_size(close_price):
     Logic:
     - Risk Amount = Account Size * Risk % ($1,000)
     - Stop Loss Distance = Close Price * Stop Loss %
-    - Shares = Risk Amount / Stop Loss Distance
-    - Alternatively: Position Value = Risk Amount / Stop Loss % ($50,000)
-    - Shares = Position Value / Close Price
+    - Shares = floor(Risk Amount / Stop Loss Distance) -> Integer shares
+    - Stop Loss Price = Close Price - Stop Loss Distance
 
     Returns:
         (size, stop_loss_price)
     """
     if close_price <= 0:
-        return 0.0, 0.0
+        return 0, 0.0
 
     risk_amount = ACCOUNT_SIZE * RISK_PCT
     stop_loss_distance = close_price * STOP_LOSS_PCT
 
     # Avoid division by zero
     if stop_loss_distance == 0:
-        return 0.0, 0.0
+        return 0, 0.0
 
-    shares = risk_amount / stop_loss_distance
+    # Use floor to ensure integer shares and avoid insufficient funds (rounding down is safer)
+    shares = math.floor(risk_amount / stop_loss_distance)
     stop_loss_price = close_price - stop_loss_distance
 
     return shares, stop_loss_price
@@ -44,11 +44,7 @@ def calculate_position_size(close_price):
 def run_risk_manager():
     print("Starting Risk Manager...")
 
-    if not os.path.exists(DB_PATH):
-        print(f"Database not found at {DB_PATH}")
-        return
-
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
@@ -67,9 +63,10 @@ def run_risk_manager():
         print(f"Found {len(pending_signals)} pending BUY signals.")
 
         for signal in pending_signals:
+            # Depending on row_factory, access might differ. db_utils doesn't set it by default, returns tuples unless set.
+            # Assuming tuples here as previous code did.
             signal_id, symbol, timestamp, close_price = signal
 
-            # Additional check, though INNER JOIN should handle it mostly
             if close_price is None:
                 print(f"Skipping signal {signal_id} for {symbol} at {timestamp}: No market data found.")
                 continue
@@ -83,7 +80,7 @@ def run_risk_manager():
                     WHERE id = ?
                 """
                 cursor.execute(update_query, (size, stop_loss, signal_id))
-                print(f"Processed signal {signal_id}: Symbol={symbol}, Price={close_price}, Size={size:.4f}, StopLoss={stop_loss:.4f}")
+                print(f"Processed signal {signal_id}: Symbol={symbol}, Price={close_price}, Size={size}, StopLoss={stop_loss:.4f}")
             else:
                  print(f"Skipping signal {signal_id}: Calculated size is 0 (Price: {close_price}).")
 

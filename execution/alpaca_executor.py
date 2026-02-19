@@ -2,26 +2,12 @@ import os
 import time
 import sqlite3
 import datetime
+import sys
 from alpaca_trade_api.rest import REST, TimeFrame
 
-# Define database path relative to this script
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
-
-def get_db_connection(max_retries=5, retry_delay=1):
-    """Establishes a database connection with retry logic."""
-    for attempt in range(max_retries):
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e):
-                print(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(retry_delay)
-            else:
-                raise e
-    raise sqlite3.OperationalError(f"Could not acquire database lock after {max_retries} attempts")
+# Ensure shared package is available
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import get_db_connection
 
 def process_signals():
     """Reads SIZED signals, executes them on Alpaca, and logs trades."""
@@ -35,9 +21,14 @@ def process_signals():
         print("Error: Alpaca environment variables not set.")
         return
 
-    api = REST(api_key, api_secret, base_url)
+    try:
+        api = REST(api_key, api_secret, base_url)
+    except Exception as e:
+        print(f"Failed to initialize Alpaca API: {e}")
+        return
 
     conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
@@ -75,44 +66,32 @@ def process_signals():
                 # Retrieve updated order details
                 updated_order = api.get_order(order.id)
 
-                # Use filled_avg_price if available, otherwise it might still be pending/partial
-                # The prompt implies we should log the final fill price.
-                # If it's not filled, we log what we have or maybe we should wait longer?
-                # Instruction: "Wait 2 seconds... then query... to get the exact filled_avg_price."
-                # We will proceed with the value from updated_order.
-
+                # Check execution status
                 fill_price = updated_order.filled_avg_price
-                if fill_price is None:
-                    print(f"Warning: Order {order.id} not filled yet after 2s. Status: {updated_order.status}")
-                    # If not filled, we probably shouldn't mark it EXECUTED?
-                    # But the prompt says "Once Alpaca confirms the order, UPDATE... and log".
-                    # Order confirmation (submit_order success) happened.
-                    # But if price is None, we can't log price.
-                    # Let's assume for simulation it fills. If None, we skip DB update to avoid crashing.
-                    continue
-
                 filled_qty = updated_order.filled_qty
 
-                # Format timestamp to strict UTC ISO 8601 string (YYYY-MM-DDTHH:MM:SSZ)
-                # Alpaca returns ISO strings usually. We ensure it ends in Z if it is UTC.
-                # updated_order.filled_at is a string or datetime depending on library version.
-                # alpaca-trade-api usually returns datetime objects if parsed, or strings.
-                # Let's inspect the type or handle both.
+                if fill_price is None:
+                    print(f"Order {order.id} not filled yet. Status: {updated_order.status}. Skipping logging for now.")
+                    # We leave it as SIZED? Or mark as SUBMITTED?
+                    # The current schema has 'EXECUTED'.
+                    # Ideally we should have 'SUBMITTED' state.
+                    # But sticking to existing schema, we just don't update if not filled.
+                    # Or we wait longer?
+                    # For now, we skip update.
+                    continue
 
                 filled_at = updated_order.filled_at
 
+                # Timestamp handling
                 if isinstance(filled_at, str):
-                    # Parse string to ensure we format it correctly or just use it if it matches?
+                    # Parse and ensure UTC
                     # Example: '2023-10-27T15:00:00.123456Z'
-                    # We want YYYY-MM-DDTHH:MM:SSZ
-                    # Let's parse and reformat to be safe and consistent.
                     dt = datetime.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
                 elif isinstance(filled_at, datetime.datetime):
                     dt = filled_at
                 else:
-                    dt = datetime.datetime.now(datetime.timezone.utc) # Fallback if None
+                    dt = datetime.datetime.now(datetime.timezone.utc)
 
-                # Convert to UTC and format
                 dt = dt.astimezone(datetime.timezone.utc)
                 formatted_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -130,10 +109,12 @@ def process_signals():
 
             except Exception as e:
                 print(f"Error processing signal {signal_id}: {e}")
-                # We do not rollback the fetch, but maybe we should rollback any partial transaction?
-                # We commit per signal, so if one fails, others proceed.
-                # But if the INSERT fails after UPDATE, we have an issue.
-                # The commit is at the end of the block, so it's atomic per signal.
+                # Don't rollback other signals if one fails, but current transaction might be aborted?
+                # conn.commit() is per signal loop.
+                # If exception, we catch it and continue loop.
+                # But we might need to rollback specific cursor if it was in transaction?
+                # sqlite3 implicit transaction starts at first command.
+                # if commit failed, we rollback.
                 conn.rollback()
 
     except Exception as e:

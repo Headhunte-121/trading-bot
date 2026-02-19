@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install system dependencies
 # build-essential, gcc, g++ for compiling packages
-# git for installing python packages from git repositories
+# git for installing python packages from git repositories (if needed)
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \

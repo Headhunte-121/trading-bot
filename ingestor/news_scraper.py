@@ -2,22 +2,16 @@ import os
 import sqlite3
 import requests
 import datetime
+import sys
+
+# Ensure shared package is available
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import get_db_connection, DB_PATH
 
 # Configuration
 SYMBOLS = ['AAPL', 'MSFT']
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, 'data', 'trade_history.db')
 API_URL = "https://finnhub.io/api/v1/company-news"
-
-def get_db_connection():
-    """Establishes a connection to the SQLite database with a timeout."""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=15)
-        return conn
-    except sqlite3.Error as e:
-        print(f"Error connecting to database: {e}")
-        return None
 
 def fetch_news(symbol):
     """Fetches company news for a given symbol from Finnhub."""
@@ -62,18 +56,19 @@ def save_news(conn, news_items, symbol):
                 # Convert Unix timestamp to ISO 8601 (UTC)
                 ts_iso = datetime.datetime.fromtimestamp(unix_ts, datetime.timezone.utc).isoformat()
 
-                # Insert into database
-                # raw_news schema: id, symbol, timestamp, headline, sentiment_score
+                # Insert into database using INSERT OR IGNORE to handle duplicates based on UNIQUE constraint
                 cursor.execute("""
-                    INSERT INTO raw_news (symbol, timestamp, headline, sentiment_score)
+                    INSERT OR IGNORE INTO raw_news (symbol, timestamp, headline, sentiment_score)
                     VALUES (?, ?, ?, NULL)
                 """, (symbol, ts_iso, headline))
-                count += 1
+
+                if cursor.rowcount > 0:
+                    count += 1
         except Exception as e:
             print(f"Error processing news item: {e}")
 
     conn.commit()
-    print(f"Inserted {count} news items for {symbol}.")
+    print(f"Inserted {count} new news items for {symbol}.")
 
 def main():
     print("Starting news scraper...")
@@ -83,8 +78,6 @@ def main():
         return
 
     conn = get_db_connection()
-    if not conn:
-        return
 
     try:
         for symbol in SYMBOLS:

@@ -1,21 +1,18 @@
 import sqlite3
 import os
+import sys
 
-# Define the path to the database
-DB_NAME = "trade_history.db"
-# Use os.path to determine the root directory relative to this script
-# schema.py is in /shared/schema.py, so root is ..
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, DB_NAME)
+# Ensure shared package is available if run directly
+if __name__ == "__main__":
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shared.db_utils import get_db_connection, DB_PATH
 
 def setup_database():
     """Initializes the database and creates tables if they do not exist."""
-    # Ensure the data directory exists
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+    print(f"Setting up database at {DB_PATH}...")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # market_data
@@ -35,13 +32,15 @@ def setup_database():
 
     # raw_news
     # Auto-Incrementing ID
+    # Added UNIQUE constraint for deduplication: symbol, timestamp, headline
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS raw_news (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             headline TEXT,
-            sentiment_score REAL
+            sentiment_score REAL,
+            UNIQUE(symbol, timestamp, headline)
         )
     """)
 
@@ -84,9 +83,13 @@ def setup_database():
         )
     """)
 
+    # Enable WAL mode explicitly on setup
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+
     conn.commit()
     conn.close()
-    print(f"Database initialized at {DB_PATH}")
+    print("Database setup complete.")
 
 if __name__ == "__main__":
     setup_database()

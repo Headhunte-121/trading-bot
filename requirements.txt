@@ -1,19 +1,21 @@
 # Data Ingestion
-yfinance
+yfinance>=0.2.0
 beautifulsoup4
 requests
 
 # Data Processing
-pandas
-# Use pandas-ta development branch for compatibility with newer pandas/python versions
-git+https://github.com/twopirllc/pandas-ta.git@development
+pandas>=2.0.0
+# Use pandas-ta from PyPI
+pandas-ta
 
 # AI/NLP
 transformers
 torch
 
 # Execution
-alpaca-trade-api
+alpaca-trade-api>=3.0.0
+# Ensure urllib3 is compatible with alpaca-trade-api but not ancient
+urllib3<2,>=1.26.0
 
 # Dashboard
 streamlit
