@@ -1,6 +1,5 @@
 import sys
 import os
-import time
 import yfinance as yf
 import pandas as pd
 import sqlite3
@@ -11,7 +10,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, DB_PATH
 from shared.schema import setup_database
 
-def fetch_market_data(symbols, period="7d", interval="1h"):
+# CHANGED: period to "5d" and interval to "5m" for fast, 5-minute candles
+def fetch_market_data(symbols, period="5d", interval="5m"):
     """
     Fetches market data for given symbols using yfinance.
     """
@@ -22,7 +22,7 @@ def fetch_market_data(symbols, period="7d", interval="1h"):
             # Fetch data
             df = ticker.history(period=period, interval=interval)
             if not df.empty:
-                data[symbol] = df
+                data = df
             else:
                 print(f"Warning: No data found for {symbol}")
         except Exception as e:
@@ -41,25 +41,19 @@ def save_to_db(data):
         for symbol, df in data.items():
             for index, row in df.iterrows():
                 # Ensure UTC timestamp
-                # yfinance index is usually tz-aware
                 if index.tzinfo is None:
-                    # If naive, assume UTC or localize to UTC?
-                    # Stocks are usually in exchange time. But we want UTC.
-                    # Safety fallback: assume UTC.
                     ts_utc = index.tz_localize(datetime.timezone.utc)
                 else:
                     ts_utc = index.tz_convert(datetime.timezone.utc)
 
                 timestamp = ts_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                open_price = row['Open']
-                high_price = row['High']
-                low_price = row['Low']
-                close_price = row['Close']
-                volume = row['Volume']
+                open_price = row
+                high_price = row
+                low_price = row
+                close_price = row
+                volume = row
 
-                # With WAL mode and increased timeout, explicit retries are less critical but still safe.
-                # We rely on get_db_connection's timeout (30s).
                 try:
                     cursor.execute('''
                         INSERT OR REPLACE INTO market_data
@@ -79,11 +73,10 @@ def save_to_db(data):
             conn.close()
 
 if __name__ == "__main__":
-    # Initialize database (idempotent)
     setup_database()
 
-    symbols = ['AAPL', 'MSFT']
-    print(f"Fetching data for {symbols}...")
+    symbols =
+    print(f"Fetching 5-minute data for {symbols}...")
     market_data = fetch_market_data(symbols)
 
     if market_data:
