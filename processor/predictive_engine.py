@@ -161,7 +161,8 @@ def run_predictions(pipeline_small, pipeline_large):
                 ensemble_pct
             ))
 
-            print(f"   -> {symbol}: {current_price:.2f} -> ENS: {ensemble_price:.2f} ({ensemble_pct:+.2f}%) | S: {p_small:.2f} L: {p_large:.2f}")
+            if ensemble_pct > 0.4:
+                print(f"   -> {symbol}: {current_price:.2f} -> ENS: {ensemble_price:.2f} ({ensemble_pct:+.2f}%) | S: {p_small:.2f} L: {p_large:.2f}")
 
         # Write to DB
         cursor = conn.cursor()
@@ -172,6 +173,7 @@ def run_predictions(pipeline_small, pipeline_large):
         """, results)
         conn.commit()
         print(f"✅ Saved {len(results)} ensemble predictions.")
+        print("[BRAIN] RTX 5050 inference cycle complete.")
 
     except Exception as e:
         print(f"❌ Ensemble Engine Error: {e}")

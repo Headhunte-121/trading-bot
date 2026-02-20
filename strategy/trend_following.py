@@ -22,7 +22,7 @@ def run_strategy():
     cursor = conn.cursor()
 
     try:
-        print("Running Ensemble Strategy...")
+        # print("Running Ensemble Strategy...")
 
         # Lookback window (e.g. last 60 minutes of candles)
         lookback_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=60)
@@ -56,10 +56,10 @@ def run_strategy():
         candidates = cursor.fetchall()
 
         if not candidates:
-            print("No candidates found matching strategy criteria.")
+            # print("No candidates found matching strategy criteria.")
             return
 
-        print(f"Found {len(candidates)} potential signals.")
+        # print(f"Found {len(candidates)} potential signals.")
 
         for row in candidates:
             symbol = row['symbol']
