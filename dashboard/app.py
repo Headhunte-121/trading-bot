@@ -8,13 +8,16 @@ import sys
 import datetime
 import time
 import warnings
+import logging
 from streamlit_autorefresh import st_autorefresh
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
-# Suppress Warnings (Deprecation & Future)
-warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*use_container_width.*")
+# Suppress Warnings (Aggressive)
+warnings.filterwarnings("ignore")
+os.environ["PYTHONWARNINGS"] = "ignore"
+
+# Suppress Streamlit Logs
+logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 # Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
