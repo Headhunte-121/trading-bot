@@ -85,8 +85,8 @@ def main():
             return f'color: {color}; font-weight: bold'
 
         if not df_tech.empty:
-            st.dataframe(df_tech.style.map(highlight_rsi, subset=['rsi_14']), use_container_width=True)
-
+            st.dataframe(df_tech.style.map(highlight_rsi, subset=['rsi_14']), width=None)
+            
     with right_col:
         st.subheader("📜 Recent Executions")
         trade_query = "SELECT symbol, side, price, qty, timestamp FROM executed_trades ORDER BY timestamp DESC LIMIT 10"
