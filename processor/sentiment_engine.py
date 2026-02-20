@@ -59,15 +59,18 @@ def load_llm():
     return text_generator
 
 def analyze_headline(headline, symbol, llm_pipeline):
-    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-    You are a strict financial trading algorithm. 
-    Task 1: Determine if the headline is DIRECTLY relevant to the stock ticker {symbol}. 
-    - If it is about a competitor but implies nothing for {symbol}, it is NOT relevant.
-    - If it is general market news, it is NOT relevant.
-    Task 2: If relevant, assign a sentiment score from -1.0 (Very Bearish) to 1.0 (Very Bullish).
+  prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    You are a conservative Wall Street Analyst. 
+    Task 1: Is this headline directly relevant to {symbol}? [YES/NO]
+    Task 2: Sentiment score from -1.0 to 1.0. 
     
-    Respond in EXACTLY this format:
-    [RELEVANT: YES/NO] [SCORE: <number>]
+    SCORING RUBRIC:
+    - 0.1 to 0.3: Minor news, general updates, or slight positive/negative opinions.
+    - 0.4 to 0.7: Significant events (New products, Analyst upgrades, strong earnings).
+    - 0.8 to 1.0: Reserved ONLY for catastrophic or game-changing news (Bankruptcy, Acquisition, 20% earnings beat/miss).
+    - If it's a "Top 10 stocks to buy" list, give it a 0.1. Don't overreact.
+
+    Format: [RELEVANT: YES/NO] [SCORE: <number>]
     <|eot_id|><|start_header_id|>user<|end_header_id|>
     Headline: "{headline}"
     Ticker: {symbol}
