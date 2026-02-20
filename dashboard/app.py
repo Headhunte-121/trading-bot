@@ -233,6 +233,7 @@ def main():
             padding: 8px 12px;
             min-width: 140px;
             text-align: center;
+            flex-shrink: 0; /* Prevent shrinking */
         }
 
         .ticker-symbol { font-weight: bold; font-size: 1.1em; color: #FFFFFF; }
@@ -392,7 +393,7 @@ def main():
         index=target_index,
         key="symbol_selector"
     )
-    
+
     if st.sidebar.button("🔄 REFRESH SYSTEM"):
         st.rerun()
 
@@ -400,20 +401,26 @@ def main():
     st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
     st.markdown("#### 🌊 TREND SURFER SCANNER (Price > SMA 200)")
 
-    if not scanner_df.empty:
-        # Create HTML for ticker tape style
-        ticker_html = "<div class='ticker-container'>"
-        for row in scanner_df.itertuples():
-            dist = row.pct_dist
-            ticker_html += f"""
+    if not movers.empty:
+        # Create HTML for ticker tape
+        ticker_html_list = []
+        for row in movers.itertuples():
+            color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
+            arrow = "▲" if row.pct_change >= 0 else "▼"
+            card_html = f"""
                 <div class='ticker-card'>
                     <div class='ticker-symbol'>{row.symbol}</div>
                     <div class='ticker-price'>${row.close:.2f}</div>
                     <div class='ticker-highlight'>+{dist:.2f}% > SMA</div>
                 </div>
             """
-        ticker_html += "</div>"
-        st.markdown(ticker_html, unsafe_allow_html=True)
+            ticker_html_list.append(card_html)
+
+        # Join list into a single string and wrap in container
+        ticker_html_content = "".join(ticker_html_list)
+        final_html = f"<div class='ticker-container'>{ticker_html_content}</div>"
+
+        st.markdown(final_html, unsafe_allow_html=True)
     else:
         st.info("No healthy trends detected. Market might be Bearish.")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -421,44 +428,55 @@ def main():
     # --- Zone B: Main View (Chart & Technicals) ---
     col_chart, col_ai = st.columns([3, 1])
 
-    with col_chart:
-        st.markdown(f"### 🎯 TARGET: {selected_symbol}")
-        
-        if selected_symbol:
-            df_candles = get_recent_candles(selected_symbol)
-            df_tech = get_technicals(selected_symbol)
-            df_trades = get_symbol_trades(selected_symbol)
+    if selected_symbol:
+        df_candles = get_recent_candles(selected_symbol)
+        df_tech = get_technicals(selected_symbol)
+        df_trades = get_symbol_trades(selected_symbol)
 
-            if not df_candles.empty:
-                # Create Plotly Subplot
-                fig = make_subplots(
-                    rows=2, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.05,
-                    row_heights=[0.7, 0.3],
-                    specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
-                )
+        if not df_candles.empty:
+            # Create Plotly Subplot
+            fig = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                row_heights=[0.7, 0.3],
+                specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+            )
 
-                # Candlestick
-                fig.add_trace(go.Candlestick(
-                    x=df_candles['timestamp'],
-                    open=df_candles['open'],
-                    high=df_candles['high'],
-                    low=df_candles['low'],
-                    close=df_candles['close'],
-                    name='OHLC',
-                    increasing_line_color='#00FF94',
-                    decreasing_line_color='#FF3B30'
-                ), row=1, col=1)
+            # Determine colors based on market status
+            is_market_open = market_status['is_open']
 
-                # SMA 200 Overlay
-                if not df_tech.empty and 'sma_200' in df_tech.columns:
-                     fig.add_trace(go.Scatter(
-                        x=df_tech['timestamp'],
-                        y=df_tech['sma_200'],
-                        mode='lines',
-                        name='SMA 200',
-                        line=dict(color='#FFA500', width=2) # Orange for SMA
+            if is_market_open:
+                inc_color = '#00FF94'
+                dec_color = '#FF3B30'
+            else:
+                inc_color = '#555555' # Grayscale for closed
+                dec_color = '#333333'
+
+            # Candlestick
+            fig.add_trace(go.Candlestick(
+                x=df_candles['timestamp'],
+                open=df_candles['open'],
+                high=df_candles['high'],
+                low=df_candles['low'],
+                close=df_candles['close'],
+                name='OHLC',
+                increasing_line_color=inc_color,
+                decreasing_line_color=dec_color
+            ), row=1, col=1)
+
+            # Overlay Executed Trades
+            if not df_trades.empty:
+                buys = df_trades[df_trades['side'] == 'buy']
+                sells = df_trades[df_trades['side'] == 'sell']
+
+                if not buys.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buys['timestamp'],
+                        y=buys['price'],
+                        mode='markers',
+                        name='Buy',
+                        marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
                     ), row=1, col=1)
 
                 # Overlay Executed Trades
@@ -487,58 +505,63 @@ def main():
                 # RSI
                 if not df_tech.empty:
                     fig.add_trace(go.Scatter(
-                        x=df_tech['timestamp'],
-                        y=df_tech['rsi_14'],
-                        mode='lines',
-                        name='RSI',
-                        line=dict(color='#00d4ff', width=1)
-                    ), row=2, col=1)
+                        x=sells['timestamp'],
+                        y=sells['price'],
+                        mode='markers',
+                        name='Sell',
+                        marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
+                    ), row=1, col=1)
 
-                    # RSI Levels (35 and 55 for Trend Surfer)
-                    fig.add_hline(y=55, line_dash="dot", line_color="#FF3B30", row=2, col=1)
-                    fig.add_hline(y=35, line_dash="dot", line_color="#00FF94", row=2, col=1)
+            # RSI
+            if not df_tech.empty:
+                fig.add_trace(go.Scatter(
+                    x=df_tech['timestamp'],
+                    y=df_tech['rsi_14'],
+                    mode='lines',
+                    name='RSI',
+                    line=dict(color='#00d4ff', width=1)
+                ), row=2, col=1)
 
-                # Styling
-                fig.update_layout(
-                    template="plotly_dark",
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    height=600,
-                    showlegend=True,
-                    legend=dict(x=0, y=1, orientation="h"),
-                    xaxis_rangeslider_visible=False
+                # RSI Levels
+                fig.add_hline(y=70, line_dash="dot", line_color="#FF3B30", row=2, col=1)
+                fig.add_hline(y=30, line_dash="dot", line_color="#00FF94", row=2, col=1)
+
+            # Styling
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=600,
+                showlegend=False,
+                xaxis_rangeslider_visible=False
+            )
+
+            # Grid Polish & Axis Format
+            fig.update_xaxes(
+                showgrid=True,
+                gridcolor='#1E222D',
+                gridwidth=1,
+                tickformat="%H:%M",
+                rangeslider_visible=False,
+                rangebreaks=[
+                    dict(bounds=["sat", "mon"]),   # Hide weekends
+                    dict(bounds=[16, 9.5], pattern="hour"), # Hide hours outside 9:30am - 4:00pm
+                ]
+            )
+            fig.update_yaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
+
+            # Market Closed Annotation
+            if not is_market_open:
+                fig.add_annotation(
+                    text="MARKET CLOSED",
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5,
+                    showarrow=False,
+                    font=dict(size=40, color="rgba(255, 255, 255, 0.1)")
                 )
 
-                # Remove range slider from candlestick
-                fig.update_xaxes(rangeslider_visible=False)
-
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("No candle data available.")
-
-    with col_ai:
-        st.markdown(f"### 🧠 AI ANALYST")
-        if selected_symbol:
-            analysis = get_latest_analysis(selected_symbol)
-            if analysis is not None:
-                pred = analysis['ai_prediction']
-                conf = analysis['ai_confidence']
-                reason = analysis['ai_reasoning']
-
-                pred_class = "prediction-neutral"
-                if pred == 'BULLISH': pred_class = "prediction-bullish"
-                elif pred == 'BEARISH': pred_class = "prediction-bearish"
-
-                st.markdown(f"""
-                    <div class='analysis-box'>
-                        <div style='font-size: 1.2em;' class='{pred_class}'>{pred} ({conf:.2f})</div>
-                        <div style='font-size: 0.9em; margin-top: 8px; color: #DDD;'>{reason}</div>
-                        <div style='font-size: 0.7em; margin-top: 10px; color: #888;'>Generated: {analysis['timestamp']}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.info("No AI Analysis available yet.")
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("Select a symbol.")
 
@@ -600,7 +623,7 @@ def main():
 
             st.dataframe(
                 styled_df,
-                use_container_width=True,
+                width="stretch",
                 height=400,
                 hide_index=True,
                 column_config={
