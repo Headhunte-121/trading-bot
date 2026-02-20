@@ -8,3 +8,6 @@ SYMBOLS = [
     'PLTR', 'CSCO', 'MRK', 'LRCX', 'AMAT', 'PM', 'MS', 'RTX', 'GS', 'WFC',
     'UNH', 'IBM', 'TMUS', 'MCD', 'AXP', 'LIN', 'GEV', 'PEP', 'INTC', 'VZ'
 ]
+
+# Deep Value "King Dip" Candidates (Mega-Cap Tech)
+KINGS_LIST = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META']
