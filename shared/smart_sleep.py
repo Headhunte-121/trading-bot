@@ -1,11 +1,16 @@
 import time
 import sys
+import os
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     # Fallback for older python versions if needed, though 3.12 has it.
     from backports.zoneinfo import ZoneInfo
+
+# Ensure shared package is available if run directly
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db_utils import log_system_event
 
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
@@ -66,5 +71,10 @@ def get_sleep_seconds():
 if __name__ == "__main__":
     status = get_market_status()
     print(f"{status['status_message']}")
+
+    # Log the sleep event
+    log_level = "INFO" if status['is_open'] else "WARNING"
+    log_system_event("SmartSleeper", log_level, f"{status['status_message']} - Sleeping {status['sleep_seconds']}s")
+
     print(f"Sleeping for {status['sleep_seconds']} seconds...")
     time.sleep(status['sleep_seconds'])

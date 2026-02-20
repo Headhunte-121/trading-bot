@@ -8,7 +8,7 @@ import time
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.db_utils import get_db_connection
+from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
 from shared.smart_sleep import get_sleep_seconds
 
@@ -95,9 +95,11 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
             ''', rows_to_insert)
             conn.commit()
             print(f"✅ Saved {len(rows_to_insert)} rows for {symbol} ({timeframe}).")
+            log_system_event("MarketHarvester", "INFO", f"Ingested {len(rows_to_insert)} rows for {symbol} ({timeframe})")
 
     except Exception as e:
         print(f"❌ Error fetching {symbol} ({timeframe}): {e}")
+        log_system_event("MarketHarvester", "ERROR", f"Error fetching {symbol} ({timeframe}): {str(e)}")
     finally:
         conn.close()
 
@@ -106,11 +108,13 @@ def initial_sync():
     Runs once at startup to fetch 1 year of 1d data and ensure SMA 200 data is available.
     """
     print("🚀 Starting Initial Sync (Daily Data for SMA 200)...")
+    log_system_event("MarketHarvester", "INFO", "Starting Initial Sync (Daily Data for SMA 200)")
     for symbol in SYMBOLS:
         # Fetch 2 years of daily data to be safe for SMA 200 calculation
         fetch_and_store(symbol, "1d", "2y", "1d")
         time.sleep(0.2)
     print("✅ Initial Sync Complete.")
+    log_system_event("MarketHarvester", "INFO", "Initial Sync Complete")
 
 def intraday_sync():
     """
