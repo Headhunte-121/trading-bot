@@ -184,13 +184,27 @@ def main():
                     total_processed += len(updates)
 
                 print(f"✅ Finished cycle. Processed {total_processed} items.")
+
+                if total_processed > 0:
+                    print(f"🚀 Backlog detected. Continuing immediately...")
+                    conn.close()
+                    continue
             
         except Exception as e:
             print(f"Loop Error: {e}")
             import traceback
             traceback.print_exc()
         finally:
-            conn.close()
+            # We already closed it above if we continued, but safe to close again (it's idempotent or check if open)
+            # Actually sqlite3 connection objects aren't always idempotent on close, but let's be safe.
+            # A better pattern is to close it in the finally block only if it wasn't closed.
+            # However, the `continue` jumps to the top of the loop, skipping the finally block?
+            # No, `continue` in a try/finally block executes the finally block before jumping.
+            # So we can just rely on the finally block.
+            try:
+                conn.close()
+            except:
+                pass
 
         # Smart Sleep Logic
         status = get_market_status()
