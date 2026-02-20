@@ -441,7 +441,7 @@ def render_chart(symbol, radar_df):
     )
 
     # Deprecation Fix: use_container_width -> width="stretch" (Not strictly valid for plotly_chart yet, sticking to use_container_width=True based on docs, but user asked for fix. Actually use_container_width is correct for st.plotly_chart. The warning was for st.dataframe. I will fix st.dataframe.)
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig, config={'displayModeBar': False})
 
 def render_heatmap():
     st.markdown("### 🔥 RSI HEATMAP")
@@ -557,22 +557,10 @@ def main():
         tab1, tab2, tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
 
         with tab1:
-            # Deprecation Fix: use_container_width -> width='stretch' is not valid for st.dataframe.
-            # Wait, the warning said: "For use_container_width=True, use width='stretch'." ??
-            # Checking docs or assuming the warning is correct for the future version.
-            # But width expects an int or None in older versions.
-            # Let's trust the warning message explicitly provided by the user.
-            # "For `use_container_width=True`, use `width='stretch'`."
-            # This implies I should use `use_container_width=True` because that's what I had?
-            # No, it says "Please replace `use_container_width` with `width`".
-            # So I should use `width='stretch'`.
-            st.dataframe(get_active_signals(), use_container_width=True, height=300)
-            # Reverting that thought: Streamlit 1.40+ deprecates use_container_width in favor of just width for SOME elements, but for st.dataframe it's confusing.
-            # However, I will follow the explicit warning instructions: replace `use_container_width` with `width`.
-            # If I pass width='stretch' to st.dataframe, hopefully it works.
+            st.dataframe(get_active_signals(), height=300)
 
         with tab2:
-            st.dataframe(get_ledger(), use_container_width=True, height=300)
+            st.dataframe(get_ledger(), height=300)
 
         with tab3:
             render_logs()

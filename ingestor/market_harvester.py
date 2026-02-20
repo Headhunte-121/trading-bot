@@ -47,16 +47,16 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
 
             # Use 'start' parameter for updates
             # yfinance history with start date fetches from 00:00 of that date
-            print(f"🔄 Updating {symbol} ({timeframe}). Last: {last_ts}...")
+            # print(f"🔄 Updating {symbol} ({timeframe}). Last: {last_ts}...")
             df = yf.Ticker(symbol).history(start=start_date, interval=interval)
         else:
             # Full fetch if no history
-            print(f"📜 Initial Fetch {symbol} ({timeframe})...")
+            # print(f"📜 Initial Fetch {symbol} ({timeframe})...")
             df = yf.Ticker(symbol).history(period=period, interval=interval)
 
         if df.empty:
-            print(f"⚠️ No data returned for {symbol} ({timeframe}). Market holiday or halt?")
-            return
+            # print(f"⚠️ No data returned for {symbol} ({timeframe}). Market holiday or halt?")
+            return False
 
         # Optional: Limit rows (e.g. strict intraday update)
         if limit and len(df) > limit:
@@ -94,14 +94,17 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', rows_to_insert)
             conn.commit()
-            print(f"✅ Saved {len(rows_to_insert)} rows for {symbol} ({timeframe}).")
+            # print(f"✅ Saved {len(rows_to_insert)} rows for {symbol} ({timeframe}).")
             log_system_event("MarketHarvester", "INFO", f"Ingested {len(rows_to_insert)} rows for {symbol} ({timeframe})")
+            return True
 
     except Exception as e:
         print(f"❌ Error fetching {symbol} ({timeframe}): {e}")
         log_system_event("MarketHarvester", "ERROR", f"Error fetching {symbol} ({timeframe}): {str(e)}")
+        return False
     finally:
         conn.close()
+    return False
 
 def initial_sync():
     """
@@ -121,15 +124,17 @@ def intraday_sync():
     Runs every 5 minutes to fetch recent 5m data.
     """
     print("🔄 Running Intraday Sync (5m)...")
+    count = 0
     for symbol in SYMBOLS:
         # Fetch 1 day of 5m data (covers today's market hours).
         # We limit to last 5 candles if updating, just to be lean as requested,
         # but sticking to period="1d" is safest network-wise.
         # However, passing limit=5 respects the "fetch only last 3-5 candles" directive
         # for processing/insertion, even if yfinance fetches the day.
-        fetch_and_store(symbol, "5m", "1d", "5m", limit=5)
+        if fetch_and_store(symbol, "5m", "1d", "5m", limit=5):
+            count += 1
         time.sleep(0.2)
-    print("✅ Intraday Sync Cycle Complete.")
+    print(f"✅ {count} symbols synced.")
 
 def main():
     print("🚀 Starting Smart Market Harvester (Dual-Mode)...")

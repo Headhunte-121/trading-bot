@@ -21,6 +21,7 @@ def calculate_technical_indicators():
 
     try:
         print("📊 Starting Technical Analysis Processor...")
+        count = 0
 
         for symbol in SYMBOLS:
             # 1. Fetch Daily Data & Calculate SMA 200
@@ -188,9 +189,10 @@ def calculate_technical_indicators():
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, rows_to_insert)
                 conn.commit()
-                print(f"✅ Updated technicals for {symbol} ({len(rows_to_insert)} rows).")
+                # print(f"✅ Updated technicals for {symbol} ({len(rows_to_insert)} rows).")
+                count += 1
 
-        print("✅ TA Cycle Complete.")
+        print(f"✅ {count} symbols calculated.")
 
     except Exception as e:
         print(f"❌ TA Processor Error: {e}")
