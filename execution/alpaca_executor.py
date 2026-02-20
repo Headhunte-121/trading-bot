@@ -17,7 +17,7 @@ def process_signals():
     api_secret = os.getenv("APCA_API_SECRET_KEY")
     base_url = os.getenv("APCA_API_BASE_URL")
 
-    if not all():
+    if not all([api_key, api_secret, base_url]):
         print("Error: Alpaca environment variables not set.")
         return
 
