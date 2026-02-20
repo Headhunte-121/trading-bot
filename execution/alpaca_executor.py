@@ -9,6 +9,8 @@ from alpaca_trade_api.rest import REST
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
 
+TRAIL_PERCENT = 2.5
+
 def get_alpaca_api():
     api_key = os.getenv("APCA_API_KEY_ID")
     api_secret = os.getenv("APCA_API_SECRET_KEY")
@@ -39,7 +41,7 @@ def log_trade(conn, symbol, price, qty, side, timestamp_str):
 def check_submitted_orders(api, conn):
     """
     Checks the status of orders marked as 'SUBMITTED' in the database.
-    If filled, logs the trade and updates status to 'EXECUTED'.
+    If filled, submits a Trailing Stop Sell and updates status to 'EXECUTED'.
     If canceled/rejected, updates status to 'FAILED'.
     """
     cursor = conn.cursor()
@@ -67,8 +69,8 @@ def check_submitted_orders(api, conn):
             status = order.status
 
             if status == 'filled':
-                fill_price = order.filled_avg_price
-                filled_qty = order.filled_qty
+                fill_price = float(order.filled_avg_price)
+                filled_qty = float(order.filled_qty)
                 filled_at = order.filled_at
 
                 # Timestamp parsing
@@ -83,6 +85,22 @@ def check_submitted_orders(api, conn):
 
                 log_trade(conn, symbol, fill_price, filled_qty, 'buy', ts_iso)
                 
+                # Submit Trailing Stop Sell
+                try:
+                    print(f"🛑 Submitting Trailing Stop ({TRAIL_PERCENT}%) for {symbol}...")
+                    stop_order = api.submit_order(
+                        symbol=symbol,
+                        qty=filled_qty,
+                        side='sell',
+                        type='trailing_stop',
+                        trail_percent=TRAIL_PERCENT,
+                        time_in_force='gtc'
+                    )
+                    print(f"✅ Trailing Stop submitted: {stop_order.id}")
+                except Exception as stop_error:
+                    print(f"❌ FAILED to submit Trailing Stop for {symbol}: {stop_error}")
+                    # We still mark as executed but warn loudly
+
                 cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
                 conn.commit()
                 print(f"💰 Order {order_id} filled for {symbol}!")
@@ -92,15 +110,13 @@ def check_submitted_orders(api, conn):
                 cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
                 conn.commit()
 
-            # If 'new', 'partially_filled', 'accepted', etc., do nothing and wait for next cycle.
-
         except Exception as e:
             print(f"Error checking order {order_id}: {e}")
 
 def process_new_signals(api, conn):
     """Reads SIZED signals and submits them to Alpaca."""
     cursor = conn.cursor()
-    cursor.execute("SELECT id, symbol, size, stop_loss FROM trade_signals WHERE status = 'SIZED'")
+    cursor.execute("SELECT id, symbol, size FROM trade_signals WHERE status = 'SIZED'")
     signals = cursor.fetchall()
 
     if len(signals) > 0:
@@ -111,28 +127,21 @@ def process_new_signals(api, conn):
             signal_id = signal['id']
             symbol = signal['symbol']
             qty = int(signal['size'])
-            stop_loss_val = signal['stop_loss']
 
-            if stop_loss_val is None:
-                print(f"Skipping signal {signal_id}: Stop loss is None.")
-                continue
+            # Note: We ignore 'stop_loss' from DB as we use Trailing Stop Percent
 
-            stop_loss_price = round(float(stop_loss_val), 2)
+            print(f"Processing signal {signal_id}: BUY {qty} {symbol} (Market Order)")
 
-            print(f"Processing signal {signal_id}: BUY {qty} {symbol} with SL {stop_loss_price}")
-
-            # Submit Market Order with OTO Stop Loss
+            # Submit Market Order (Entry)
             order = api.submit_order(
                 symbol=symbol,
                 qty=qty,
                 side='buy',
                 type='market',
-                time_in_force='gtc',
-                order_class='oto',
-                stop_loss={'stop_price': stop_loss_price}
+                time_in_force='gtc'
             )
 
-            print(f"✅ Order submitted successfully: {order.id}")
+            print(f"✅ Entry Order submitted successfully: {order.id}")
 
             # Mark as SUBMITTED immediately and save order_id
             cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (order.id, signal_id))
@@ -152,7 +161,7 @@ def main():
     conn.row_factory = sqlite3.Row # CRITICAL: Enable column access by name
 
     try:
-        # First check existing orders
+        # First check existing orders (and submit trailing stops if filled)
         check_submitted_orders(api, conn)
 
         # Then process new signals

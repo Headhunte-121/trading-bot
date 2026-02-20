@@ -14,6 +14,15 @@ def calculate_indicators():
     cursor = conn.cursor()
 
     try:
+        # Pre-load daily SMA 200 map
+        print("Loading Daily SMA 200 data...")
+        cursor.execute("SELECT symbol, date, sma_200 FROM market_data_daily WHERE sma_200 IS NOT NULL")
+        daily_rows = cursor.fetchall()
+        daily_sma_map = {}
+        for r in daily_rows:
+            # key: (symbol, date_str) -> value: sma_200
+            daily_sma_map[(r[0], r[1])] = r[2]
+
         # Get list of symbols
         cursor.execute("SELECT DISTINCT symbol FROM market_data")
         symbols = [row[0] for row in cursor.fetchall()]
@@ -108,11 +117,17 @@ def calculate_indicators():
             # Prepare data for insertion
             results = []
             for _, row in df_to_insert.iterrows():
+                ts_str = row['timestamp']
+                date_str = ts_str[:10] # Extract YYYY-MM-DD
+
+                sma_200 = daily_sma_map.get((row['symbol'], date_str))
+
                 results.append((
                     row['symbol'],
-                    row['timestamp'],
+                    ts_str,
                     float(row['rsi_14']),
-                    float(row['lower_bb'])
+                    float(row['lower_bb']),
+                    sma_200
                 ))
 
             print(f"Inserting {len(results)} new rows for {symbol}...")
@@ -120,8 +135,8 @@ def calculate_indicators():
             # Use executemany for batch insertion
             try:
                 cursor.executemany("""
-                    INSERT OR REPLACE INTO technical_indicators (symbol, timestamp, rsi_14, lower_bb)
-                    VALUES (?, ?, ?, ?)
+                    INSERT OR REPLACE INTO technical_indicators (symbol, timestamp, rsi_14, lower_bb, sma_200)
+                    VALUES (?, ?, ?, ?, ?)
                 """, results)
                 conn.commit()
             except sqlite3.OperationalError as e:

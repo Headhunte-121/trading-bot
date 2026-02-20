@@ -10,7 +10,7 @@ from shared.db_utils import get_db_connection
 # Configuration
 ACCOUNT_SIZE = 100000
 RISK_PCT = 0.01          # Risk 1% of account per trade ($1,000)
-STOP_LOSS_PCT = 0.02     # Stop Loss 2% below entry
+STOP_LOSS_PCT = 0.025    # Stop Loss 2.5% below entry (Trailing Stop)
 MAX_POSITION_SIZE_PCT = 0.20 # Cap max position size to 20% of account ($20,000) to prevent over-leveraging on tight stops
 
 def calculate_position_size(close_price):
