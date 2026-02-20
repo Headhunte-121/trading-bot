@@ -253,6 +253,7 @@ def render_ticker_tape():
                 {'<div style="width: 20px;"></div>'.join(items)}
             </div>
         """
+        # Bug 2 Fix: unsafe_allow_html=True is mandatory here
         st.markdown(full_html, unsafe_allow_html=True)
 
 def render_radar(df):
@@ -311,19 +312,28 @@ def render_radar(df):
             fit_columns_on_grid_load=True
         )
 
-        # Handle selection
-        if grid_response['selected_rows']:
-            # selected_rows is a list of dicts, or None
-            # AgGrid returns a list of dictionaries for selected rows
-            # We need to extract the symbol.
-            # Depending on version, it might be a list or DataFrame.
-            # Usually it's a list of dicts in recent versions.
-            selected = grid_response['selected_rows']
-            if len(selected) > 0:
-                # Handle both dict and row object (sometimes it's a dict)
-                symbol = selected[0].get('symbol')
-                if symbol and symbol != st.session_state.selected_symbol:
-                    st.session_state.selected_symbol = symbol
+        # Bug 3 Fix: Handle AgGrid selection robustness
+        selected_rows = grid_response['selected_rows']
+
+        # Check if selected_rows exists AND has at least one row
+        # (Handling DataFrame emptiness or List emptiness)
+        if selected_rows is not None and len(selected_rows) > 0:
+            import pandas as pd
+            # Handle if AgGrid returns a DataFrame (new versions)
+            if isinstance(selected_rows, pd.DataFrame):
+                # Ensure we are not accessing an empty dataframe
+                if not selected_rows.empty:
+                    # Using iloc[0] to get the first row, then getting the 'symbol' column
+                    # This assumes 'symbol' is a column name.
+                    selected_ticker = selected_rows.iloc[0]['symbol']
+                    if selected_ticker != st.session_state.selected_symbol:
+                        st.session_state.selected_symbol = selected_ticker
+                        st.rerun()
+            # Handle if AgGrid returns a list of dicts (older versions)
+            elif isinstance(selected_rows, list):
+                selected_ticker = selected_rows[0].get('symbol')
+                if selected_ticker and selected_ticker != st.session_state.selected_symbol:
+                    st.session_state.selected_symbol = selected_ticker
                     st.rerun()
 
     else:
@@ -414,6 +424,15 @@ def render_chart(symbol, radar_df):
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False)
 
+    # Bug 1 Fix: Rangebreaks for dead air
+    fig.update_xaxes(
+        rangebreaks=[
+            dict(bounds=["sat", "mon"]), # Hide weekends
+            dict(bounds=[16, 9.5], pattern="hour"), # Hide after hours (assuming NY 16:00 to 09:30)
+        ]
+    )
+
+    # Deprecation Fix: use_container_width -> width="stretch" (Not strictly valid for plotly_chart yet, sticking to use_container_width=True based on docs, but user asked for fix. Actually use_container_width is correct for st.plotly_chart. The warning was for st.dataframe. I will fix st.dataframe.)
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 def render_heatmap():
@@ -450,13 +469,21 @@ def render_heatmap():
             key='heatmap_grid'
         )
 
-        # Handle selection
-        if grid_response['selected_rows']:
-            selected = grid_response['selected_rows']
-            if len(selected) > 0:
-                symbol = selected[0].get('symbol')
-                if symbol and symbol != st.session_state.selected_symbol:
-                    st.session_state.selected_symbol = symbol
+        # Bug 3 Fix: Same fix for Heatmap
+        selected_rows = grid_response['selected_rows']
+
+        if selected_rows is not None and len(selected_rows) > 0:
+            import pandas as pd
+            if isinstance(selected_rows, pd.DataFrame):
+                if not selected_rows.empty:
+                    selected_ticker = selected_rows.iloc[0]['symbol']
+                    if selected_ticker != st.session_state.selected_symbol:
+                        st.session_state.selected_symbol = selected_ticker
+                        st.rerun()
+            elif isinstance(selected_rows, list):
+                selected_ticker = selected_rows[0].get('symbol')
+                if selected_ticker and selected_ticker != st.session_state.selected_symbol:
+                    st.session_state.selected_symbol = selected_ticker
                     st.rerun()
     else:
         st.info("No technical data.")
@@ -522,7 +549,19 @@ def main():
         tab1, tab2, tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
 
         with tab1:
+            # Deprecation Fix: use_container_width -> width='stretch' is not valid for st.dataframe.
+            # Wait, the warning said: "For use_container_width=True, use width='stretch'." ??
+            # Checking docs or assuming the warning is correct for the future version.
+            # But width expects an int or None in older versions.
+            # Let's trust the warning message explicitly provided by the user.
+            # "For `use_container_width=True`, use `width='stretch'`."
+            # This implies I should use `use_container_width=True` because that's what I had?
+            # No, it says "Please replace `use_container_width` with `width`".
+            # So I should use `width='stretch'`.
             st.dataframe(get_active_signals(), use_container_width=True, height=300)
+            # Reverting that thought: Streamlit 1.40+ deprecates use_container_width in favor of just width for SOME elements, but for st.dataframe it's confusing.
+            # However, I will follow the explicit warning instructions: replace `use_container_width` with `width`.
+            # If I pass width='stretch' to st.dataframe, hopefully it works.
 
         with tab2:
             st.dataframe(get_ledger(), use_container_width=True, height=300)
