@@ -9,7 +9,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, DB_PATH
 
 # Configuration
-SYMBOLS = ['AAPL', 'MSFT']
+SYMBOLS = [
+        'NVDA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META', 'AVGO', 'TSLA', 'BRK-B', 
+        'WMT', 'LLY', 'JPM', 'XOM', 'V', 'JNJ', 'MU', 'MA', 'ORCL', 'COST', 
+        'ABBV', 'BAC', 'HD', 'CVX', 'PG', 'CAT', 'GE', 'KO', 'AMD', 'NFLX', 
+        'PLTR', 'CSCO', 'MRK', 'LRCX', 'AMAT', 'PM', 'MS', 'RTX', 'GS', 'WFC', 
+        'UNH', 'IBM', 'TMUS', 'MCD', 'AXP', 'LIN', 'GEV', 'PEP', 'INTC', 'VZ'
+    ]
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
 API_URL = "https://finnhub.io/api/v1/company-news"
 
