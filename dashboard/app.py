@@ -8,6 +8,11 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
 
+# Import shared modules
+import sys
+sys.path.append(BASE_DIR)
+from shared.smart_sleep import get_market_status
+
 def get_data(query):
     with sqlite3.connect(DB_PATH) as conn:
         return pd.read_sql_query(query, conn)
@@ -25,6 +30,14 @@ def main():
 
     st.title("🚀 SwarmTrade AI | Quantum Swarm")
     st.sidebar.header("Control Panel")
+
+    # --- Market Status Badge ---
+    status = get_market_status()
+    if status['is_open']:
+        st.sidebar.success(status['status_message'])
+    else:
+        st.sidebar.error(status['status_message'])
+
     refresh = st.sidebar.button("🔄 Force Refresh Data")
 
     # --- Fetch Symbols ---
