@@ -4,6 +4,7 @@ import sqlite3
 import torch
 import sys
 import re
+import json
 import logging
 import warnings
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline, logging as hf_logging
@@ -39,89 +40,71 @@ def load_llm():
     )
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    # Important for batch generation
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "left"
     
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
         device_map="auto",
+        attn_implementation="sdpa", # Flash Attention 2
         local_files_only=False
     )
     
-    # FIX: We add model_kwargs to tell the engine to stop worrying about token conflicts
     text_generator = pipeline(
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        max_new_tokens=64,
-        pad_token_id=tokenizer.eos_token_id,
-        model_kwargs={"max_length": 8192} 
+        batch_size=16, # Enable batching
+        max_new_tokens=128,
+        pad_token_id=tokenizer.eos_token_id
     )
     
     return text_generator
 
-def analyze_headline(headline, symbol, llm_pipeline):
-    # This prompt forces the model to "think" before it scores.
-    # It explicitly forbids "Guilt by Association" (e.g. Samsung news != Apple news).
-    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-    You are an elite algorithmic trading system. Your job is to filter noise and score sentiment for the ticker: {symbol}.
+def build_prompt(headline, symbol):
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+Act as a high-frequency quant analyst. Your output must be a JSON object. For the given headline and ticker, provide:
+relevance: 0.0 to 1.0 (Direct impact vs. noise).
+sentiment: -1.0 to 1.0 (Calculated using decimal precision).
+urgency: 0 to 5 (How fast must a trader react?).
+Do NOT use rounded numbers like 0.5 or 0.8. Use the full decimal range based on the strength of the verbs used in the headline.
 
-    STRICT FILTERING RULES:
-    1. SUBJECT CHECK: If the headline is about a competitor (e.g., Samsung, Google) but does not explicitly mention {symbol}, it is IRRELEVANT (Score 0).
-    2. ETF/MARKET CHECK: If the headline is about the "S&P 500", "Nasdaq", "Tech Sector", or "Magnificent 7" generally, it is IRRELEVANT (Score 0).
-    3. LIST CHECK: If {symbol} is just listed among many others (e.g., "Top 10 stocks to buy: NVDA, AAPL, MSFT..."), score it as NEUTRAL/WEAK (0.1).
-    4. DIRECT NEWS: Only score high (>0.5 or <-0.5) if the news is SPECIFIC to {symbol}'s business (Earnings, Product Launch, Lawsuit, Merger).
+Return ONLY a JSON object: {{"relevance": <float>, "sentiment": <float>, "urgency": <int>}}
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+Headline: "{headline}"
+Ticker: {symbol}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
-    OUTPUT FORMAT:
-    You must respond in this exact format:
-    [REASONING] <1 short sentence explaining why>
-    [SCORE] <number between -1.0 and 1.0>
-
-    EXAMPLES:
-    Headline: "Samsung profits soar 50%" (Ticker: AAPL)
-    Response: [REASONING] News is about Samsung, not Apple. [SCORE] 0.0
-
-    Headline: "Tech stocks rally as Fed cuts rates" (Ticker: AAPL)
-    Response: [REASONING] General market news, not specific to Apple. [SCORE] 0.0
-
-    Headline: "Apple unveils new AI glasses" (Ticker: AAPL)
-    Response: [REASONING] New product launch is specific positive news. [SCORE] 0.8
-
-    <|eot_id|><|start_header_id|>user<|end_header_id|>
-    Headline: "{headline}"
-    Ticker: {symbol}
-    <|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-
+def parse_llm_output(output_text):
     try:
-        # Force the model to generate the reasoning first
-        sequences = llm_pipeline(prompt, do_sample=False, temperature=None, top_p=None)
-        output = sequences[0]['generated_text']
-        
-        # Parse the response
-        response = output.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
-        
-        # Debugging: Uncomment this to see the AI's "thoughts" in your terminal
-        # print(f"DEBUG AI: {response}")
-
-        # Extract Score using Regex
-        match = re.search(r"\[SCORE\]\s?(-?\d+\.?\d*)", response, re.IGNORECASE)
+        # Extract JSON part - look for { ... }
+        match = re.search(r"\{.*\}", output_text, re.DOTALL)
         if match:
-            score = float(match.group(1))
-            # Clamp between -1 and 1
-            return max(-1.0, min(1.0, score))
-            
-        return 0.0
-
+            json_str = match.group(0)
+            data = json.loads(json_str)
+            return data
+        else:
+            return None
     except Exception:
-        return 0.0
+        return None
+
+def update_db_batch(conn, updates):
+    """
+    updates: list of tuples (id, sentiment_score, relevance, urgency)
+    """
+    if not updates:
+        return
         
-def update_sentiment_score(conn, row_id, score):
-    query = "UPDATE raw_news SET sentiment_score = ? WHERE id = ?"
+    query = "UPDATE raw_news SET sentiment_score = ?, relevance = ?, urgency = ? WHERE id = ?"
     try:
-        conn.execute(query, (score, row_id))
+        # Convert updates to format (score, rel, urg, id)
+        params = [(u[1], u[2], u[3], u[0]) for u in updates]
+        conn.executemany(query, params)
         conn.commit()
-        return True
-    except sqlite3.OperationalError:
-        return False
+    except sqlite3.OperationalError as e:
+        print(f"DB Error: {e}")
 
 def main():
     device = get_device()
@@ -139,27 +122,73 @@ def main():
 
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE sentiment_score IS NULL")
+            # Fetch up to 160 un-scored headlines
+            cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE sentiment_score IS NULL LIMIT 160")
             rows = cursor.fetchall()
 
             if rows:
-                print(f"🧠 AI: Found {len(rows)} headlines. Analyzing...")
-                processed_count = 0
+                print(f"🧠 AI: Found {len(rows)} headlines. Analyzing in batches...")
+
+                # Chunk into batches of 16
+                batch_size = 16
+                total_processed = 0
                 
-                for row in rows:
-                    score = analyze_headline(row['headline'], row['symbol'], llm)
+                for i in range(0, len(rows), batch_size):
+                    batch_rows = rows[i:i+batch_size]
+                    prompts = [build_prompt(row['headline'], row['symbol']) for row in batch_rows]
                     
-                    # Log only high-conviction finds to keep terminal clean
-                    if abs(score) > 0.4:
-                        print(f"   --> {row['symbol']}: {score:+.2f} | {row['headline'][:50]}...")
+                    # Run inference
+                    # pipeline returns a list of results, each result is a list of generated dicts (usually 1)
+                    results = llm(prompts, do_sample=False, temperature=None, top_p=None)
 
-                    if update_sentiment_score(conn, row['id'], score):
-                        processed_count += 1
+                    updates = []
 
-                print(f"✅ Finished batch. Processed {processed_count} items.")
+                    for row, res in zip(batch_rows, results):
+                        # res is like [{'generated_text': '...'}]
+                        generated_text = res[0]['generated_text']
+                        # The generated text includes the prompt. We need to parse the JSON at the end.
+                        # The prompt ends with <|end_header_id|>assistant<|end_header_id|>
+                        # But our regex in parse_llm_output finds the first { after that hopefully, or we can split.
+                        # Since the prompt contains "JSON object: {...}", we need to be careful not to match that.
+                        # We should split by "assistant<|end_header_id|>"
+
+                        response_part = generated_text.split("assistant<|end_header_id|>")[-1]
+                        data = parse_llm_output(response_part)
+
+                        sentiment = 0.0
+                        relevance = 0.0
+                        urgency = 0
+
+                        if data:
+                            try:
+                                sentiment = float(data.get("sentiment", 0.0))
+                                relevance = float(data.get("relevance", 0.0))
+                                urgency = int(data.get("urgency", 0))
+
+                                # Clamp values
+                                sentiment = max(-1.0, min(1.0, sentiment))
+                                relevance = max(0.0, min(1.0, relevance))
+                                urgency = max(0, min(5, urgency))
+                            except (ValueError, TypeError):
+                                pass
+
+                        final_score = sentiment * relevance
+                        updates.append((row['id'], final_score, relevance, urgency))
+
+                        # Log high conviction
+                        if abs(final_score) > 0.4:
+                            print(f"   --> {row['symbol']}: {final_score:+.2f} (Rel: {relevance:.2f}, Urg: {urgency}) | {row['headline'][:50]}...")
+
+                    # Update DB for this batch
+                    update_db_batch(conn, updates)
+                    total_processed += len(updates)
+
+                print(f"✅ Finished cycle. Processed {total_processed} items.")
             
         except Exception as e:
             print(f"Loop Error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             conn.close()
 
