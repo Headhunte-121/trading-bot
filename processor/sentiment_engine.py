@@ -16,6 +16,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
+from shared.smart_sleep import get_market_status
 
 MODEL_NAME = "unsloth/llama-3-8b-Instruct-bnb-4bit"
 
@@ -162,7 +163,10 @@ def main():
         finally:
             conn.close()
 
-        time.sleep(60)
+        # Smart Sleep Logic
+        status = get_market_status()
+        print(f"{status['status_message']}")
+        time.sleep(status['sleep_seconds'])
 
 if __name__ == "__main__":
     main()

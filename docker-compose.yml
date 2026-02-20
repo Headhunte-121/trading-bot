@@ -17,7 +17,7 @@ services:
     env_file:
       - .env
     # Changed from 3600 to 300 (5 minutes)
-    command: sh -c "while true; do python ingestor/market_harvester.py; sleep 300; done"
+    command: sh -c "while true; do python ingestor/market_harvester.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       init-db:
@@ -30,7 +30,7 @@ services:
     env_file:
       - .env
     # Changed from 3600 to 300 (5 minutes)
-    command: sh -c "while true; do python ingestor/news_scraper.py; sleep 300; done"
+    command: sh -c "while true; do python ingestor/news_scraper.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       init-db:
@@ -44,7 +44,7 @@ services:
     env_file:
       - .env
     # Changed from 3600 to 300 (5 minutes)
-    command: sh -c "while true; do python processor/ta_calculator.py; sleep 300; done"
+    command: sh -c "while true; do python processor/ta_calculator.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       market_harvester:
@@ -81,7 +81,7 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    command: sh -c "while true; do python strategy/mean_reversion.py; sleep 300; done"
+    command: sh -c "while true; do python strategy/mean_reversion.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       ta_calculator:
@@ -98,7 +98,7 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    command: sh -c "while true; do python execution/risk_manager.py; sleep 300; done"
+    command: sh -c "while true; do python execution/risk_manager.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       strategy_engine:

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     git \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. THE "HEAVY HITTER" LAYER
