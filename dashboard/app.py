@@ -257,12 +257,9 @@ def render_ticker_tape():
             """
             items.append(html)
 
-        separator = '<div style="width: 20px;"></div>'
-        full_html = f"""
-            <div class="ticker-container">
-                {separator.join(items)}
-            </div>
-        """
+        # Manually formatted to avoid indentation (prevents Markdown code block interpretation)
+        full_html = f"<div class='ticker-container'>{'<div style='width: 20px;'></div>'.join(items)}</div>"
+
         # Bug 2 Fix: unsafe_allow_html=True is mandatory here
         st.markdown(full_html, unsafe_allow_html=True)
 
@@ -435,10 +432,11 @@ def render_chart(symbol, radar_df):
     fig.update_yaxes(showgrid=False)
 
     # Bug 1 Fix: Rangebreaks for dead air
+    # Hiding weekends and after-hours (UTC 21:00 to 14:30 during Standard Time)
     fig.update_xaxes(
         rangebreaks=[
             dict(bounds=["sat", "mon"]), # Hide weekends
-            dict(bounds=[16, 9.5], pattern="hour"), # Hide after hours (assuming NY 16:00 to 09:30)
+            dict(bounds=[21, 14.5], pattern="hour"), # Hide after hours (UTC)
         ]
     )
 
