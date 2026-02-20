@@ -7,23 +7,27 @@ import time
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.db_utils import get_db_connection
+from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
 from shared.smart_sleep import get_sleep_seconds
 
 def calculate_technical_indicators():
     """
-    Calculates technical indicators (Daily SMA 200, 5m RSI 14, 5m SMA 50)
+    Calculates technical indicators (Daily SMA 200, 5m RSI 14, 5m SMA 50, VWAP, ATR, Vol SMA)
     and writes them to the technical_indicators table.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
-        print("📊 Starting Technical Analysis Processor...")
+        # print("📊 Starting Technical Analysis Processor...")
         count = 0
 
-        for symbol in SYMBOLS:
+        # Process SYMBOLS and SPY (for Macro Filter)
+        # Use set to avoid duplicates if SPY is already in SYMBOLS (unlikely per config, but safe)
+        all_symbols = list(set(SYMBOLS + ['SPY']))
+
+        for symbol in all_symbols:
             # 1. Fetch Daily Data & Calculate SMA 200
             # We need enough history for SMA 200 (at least 200 days)
             query_daily = """
@@ -40,88 +44,66 @@ def calculate_technical_indicators():
                 df_daily['sma_200'] = df_daily.ta.sma(length=200, close='close')
 
                 # Create a map: date_str -> sma_200
-                # timestamp in DB is ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)
-                # We extract YYYY-MM-DD
                 for _, row in df_daily.iterrows():
                     if pd.notna(row['sma_200']):
                         ts_str = row['timestamp']
                         date_str = ts_str[:10]
                         daily_sma_map[date_str] = row['sma_200']
-            else:
-                print(f"⚠️ Not enough daily data for {symbol} (SMA 200). Skipping.")
-                continue
+
+            # Note: If no daily data, we continue but sma_200 will be None.
+            # SPY might only have 5m data if Harvester just started and only did intraday sync for SPY?
+            # Harvester's initial_sync fetches 1d for SPY too.
 
             # 2. Fetch 5m Data (Intraday)
-            # We need enough history for RSI 14 and SMA 50 (at least 50 periods)
-            # Let's fetch last 500 rows to be safe and efficient
+            # Fetch high, low, close, volume for VWAP/ATR
+            # Fetch enough for VWAP (needs start of day), ATR (14), SMA (50)
+            # VWAP resets daily. We need at least from start of current day.
+            # Safest is to fetch last 3000 rows (approx 10 trading days of 5m candles).
             query_intraday = """
-                SELECT timestamp, close
-                FROM market_data
-                WHERE symbol = ? AND timeframe = '5m'
-                ORDER BY timestamp ASC
-            """
-            # Fetching all might be slow if history grows.
-            # Ideally we only process new data.
-            # But indicators need context (previous values or window).
-            # We can fetch last X rows.
-            # But to ensure we update ALL recent rows, let's just fetch last 1000.
-            # If we want to backfill, we might need more.
-            # For now, let's fetch last 2000 rows.
-
-            # Actually, we should probably check what is already in technical_indicators
-            # and only process new + lookback.
-            # Query MAX(timestamp) from technical_indicators for this symbol.
-            cursor.execute("SELECT MAX(timestamp) FROM technical_indicators WHERE symbol = ?", (symbol,))
-            last_processed_ts = cursor.fetchone()[0]
-
-            if last_processed_ts:
-                # Fetch lookback (e.g. 200 rows) + new data
-                query_intraday = """
-                    SELECT timestamp, close
+                SELECT * FROM (
+                    SELECT timestamp, open, high, low, close, volume
                     FROM market_data
                     WHERE symbol = ? AND timeframe = '5m'
-                    AND timestamp >= (
-                        SELECT timestamp FROM market_data
-                        WHERE symbol = ? AND timeframe = '5m'
-                        AND timestamp <= ?
-                        ORDER BY timestamp DESC LIMIT 1 OFFSET 200
-                    )
-                    ORDER BY timestamp ASC
-                """
-                # This query is complex. Simpler: fetch last 200 before last_processed + all after.
-                # Actually, simpler approach: Just fetch last 1000 rows.
-                # If gap is huge, we might miss some, but for a running bot, this is fine.
-                query_intraday = """
-                    SELECT * FROM (
-                        SELECT timestamp, close
-                        FROM market_data
-                        WHERE symbol = ? AND timeframe = '5m'
-                        ORDER BY timestamp DESC
-                        LIMIT 1000
-                    ) ORDER BY timestamp ASC
-                """
-                df_intraday = pd.read_sql_query(query_intraday, conn, params=(symbol,))
-            else:
-                # Full fetch (limit 5000 to be safe)
-                query_intraday = """
-                    SELECT * FROM (
-                        SELECT timestamp, close
-                        FROM market_data
-                        WHERE symbol = ? AND timeframe = '5m'
-                        ORDER BY timestamp DESC
-                        LIMIT 5000
-                    ) ORDER BY timestamp ASC
-                """
-                df_intraday = pd.read_sql_query(query_intraday, conn, params=(symbol,))
+                    ORDER BY timestamp DESC
+                    LIMIT 3000
+                ) ORDER BY timestamp ASC
+            """
+            df_intraday = pd.read_sql_query(query_intraday, conn, params=(symbol,))
 
             if df_intraday.empty or len(df_intraday) < 50:
                 continue
 
+            # Set datetime index for pandas_ta (crucial for VWAP anchor)
+            df_intraday['datetime'] = pd.to_datetime(df_intraday['timestamp'])
+            df_intraday.set_index('datetime', inplace=True)
+
             # 3. Calculate Intraday Indicators
             try:
+                # RSI 14
                 df_intraday['rsi_14'] = df_intraday.ta.rsi(length=14, close='close')
+
+                # SMA 50
                 df_intraday['sma_50'] = df_intraday.ta.sma(length=50, close='close')
-                # Lower BB? Schema has it. Let's calc it.
+
+                # ATR 14
+                df_intraday['atr_14'] = df_intraday.ta.atr(length=14)
+
+                # Volume SMA 20
+                df_intraday['volume_sma_20'] = df_intraday.ta.sma(close='volume', length=20)
+
+                # VWAP (Anchor 'D' for Daily reset)
+                # pandas_ta should handle the reset if index is datetime
+                vwap = df_intraday.ta.vwap(anchor='D')
+                if vwap is not None:
+                    if isinstance(vwap, pd.DataFrame):
+                         # If it returns a DF, take the first column (usually VWAP_D)
+                         df_intraday['vwap'] = vwap.iloc[:, 0]
+                    else:
+                         df_intraday['vwap'] = vwap
+                else:
+                    df_intraday['vwap'] = None
+
+                # Bollinger Bands (Lower)
                 bb = df_intraday.ta.bbands(length=20, std=2, close='close')
                 if bb is not None:
                     # columns: BBL_20_2.0, BBM_20_2.0, BBU_20_2.0
@@ -129,73 +111,65 @@ def calculate_technical_indicators():
                     df_intraday['lower_bb'] = bb[bbl_col]
                 else:
                     df_intraday['lower_bb'] = None
+
             except Exception as e:
-                print(f"Error calculating indicators for {symbol}: {e}")
+                # print(f"Error calculating indicators for {symbol}: {e}")
+                log_system_event("TA_Calculator", "ERROR", f"Error calculating indicators for {symbol}: {str(e)}")
                 continue
 
-            # 4. Merge Daily SMA 200
-            # Logic: For each row, get date_str, lookup in daily_sma_map.
-            # Forward fill: If today's SMA 200 isn't ready (market open), use yesterday's.
-            # But map has dates.
-            # We can just use the map. get(date_str) -> if None, get(prev_date_str)?
-            # Easier: Sort daily map keys, use bisect or just get closest previous date.
-            # Or rely on the fact that we have daily data up to yesterday or today.
-
-            # Efficient way:
-            # We iterate and lookup.
-
+            # 4. Merge & Prepare Insert
             rows_to_insert = []
-
-            # Get sorted daily dates
             sorted_dates = sorted(daily_sma_map.keys())
 
             for idx, row in df_intraday.iterrows():
-                ts_str = row['timestamp']
+                # idx is datetime index now
+                ts_str = row['timestamp'] # Original string
                 date_str = ts_str[:10]
 
-                # Check map
+                # Lookup Daily SMA 200
                 sma_200 = daily_sma_map.get(date_str)
+                if sma_200 is None and sorted_dates:
+                    # Fallback to previous available
+                    # Quick approximate: compare with last available
+                    if sorted_dates[-1] < date_str:
+                        sma_200 = daily_sma_map[sorted_dates[-1]]
 
-                if sma_200 is None:
-                    # Fallback to last available daily SMA if current date missing
-                    # (e.g. today's daily candle not closed/formed yet, or simple mismatch)
-                    # We find the latest date in sorted_dates <= date_str
-                    # Simple linear scan backwards or bisect.
-                    # Since we are processing typically "now", we can just look at the last element of sorted_dates
-                    if sorted_dates:
-                        last_avail_date = sorted_dates[-1]
-                        if last_avail_date < date_str:
-                             sma_200 = daily_sma_map[last_avail_date]
-
+                # Ensure essential values exist
                 if pd.isna(row['rsi_14']) or pd.isna(row['sma_50']):
                     continue
 
-                # We allow sma_200 to be None if really no history, but preferably not.
+                # Prepare row
+                # Schema: symbol, timestamp, timeframe, rsi_14, sma_50, sma_200, lower_bb, vwap, atr_14, volume_sma_20
 
                 rows_to_insert.append((
                     symbol,
                     ts_str,
+                    '5m', # Fixed timeframe
                     float(row['rsi_14']),
                     float(row['sma_50']),
                     float(sma_200) if sma_200 else None,
-                    float(row['lower_bb']) if pd.notna(row['lower_bb']) else None
+                    float(row['lower_bb']) if pd.notna(row['lower_bb']) else None,
+                    float(row['vwap']) if pd.notna(row['vwap']) else None,
+                    float(row['atr_14']) if pd.notna(row['atr_14']) else None,
+                    float(row['volume_sma_20']) if pd.notna(row['volume_sma_20']) else None
                 ))
 
             if rows_to_insert:
                 # Batch insert
                 cursor.executemany("""
                     INSERT OR REPLACE INTO technical_indicators
-                    (symbol, timestamp, rsi_14, sma_50, sma_200, lower_bb)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (symbol, timestamp, timeframe, rsi_14, sma_50, sma_200, lower_bb, vwap, atr_14, volume_sma_20)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, rows_to_insert)
                 conn.commit()
-                # print(f"✅ Updated technicals for {symbol} ({len(rows_to_insert)} rows).")
                 count += 1
 
         print(f"✅ {count} symbols calculated.")
+        log_system_event("TA_Calculator", "INFO", f"Calculated indicators for {count} symbols.")
 
     except Exception as e:
         print(f"❌ TA Processor Error: {e}")
+        log_system_event("TA_Calculator", "ERROR", f"Critical Error: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:

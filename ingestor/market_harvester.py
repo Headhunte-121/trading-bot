@@ -106,35 +106,113 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
         conn.close()
     return False
 
+def get_hot_list():
+    """
+    Returns a set of symbols that are either currently held or sold in the last 30 minutes.
+    """
+    hot_list = set()
+    conn = get_db_connection()
+    try:
+        query_all = "SELECT symbol, side, qty, timestamp FROM executed_trades ORDER BY timestamp ASC"
+        df_trades = pd.read_sql_query(query_all, conn)
+
+        if not df_trades.empty:
+            # Calculate holdings
+            holdings = {}
+            for _, row in df_trades.iterrows():
+                sym = row['symbol']
+                qty = row['qty'] if row['qty'] else 0
+                if row['side'] == 'BUY':
+                    holdings[sym] = holdings.get(sym, 0) + qty
+                elif row['side'] == 'SELL':
+                    holdings[sym] = holdings.get(sym, 0) - qty
+
+            # Add held symbols to hot list
+            for sym, qty in holdings.items():
+                if qty > 0.0001: # Floating point tolerance
+                    hot_list.add(sym)
+
+            # Check for Sold in last 30 minutes
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            cutoff = now_utc - datetime.timedelta(minutes=30)
+
+            # Ensure proper datetime parsing
+            df_trades['dt'] = pd.to_datetime(df_trades['timestamp'], utc=True)
+
+            recent_sells = df_trades[
+                (df_trades['side'] == 'SELL') &
+                (df_trades['dt'] > cutoff)
+            ]
+
+            for sym in recent_sells['symbol'].unique():
+                hot_list.add(sym)
+
+    except Exception as e:
+        # print(f"⚠️ Error calculating Hot List: {e}")
+        log_system_event("MarketHarvester", "WARNING", f"Error calculating Hot List: {str(e)}")
+    finally:
+        conn.close()
+
+    return hot_list
+
 def initial_sync():
     """
     Runs once at startup to fetch 1 year of 1d data and ensure SMA 200 data is available.
+    Also fetches SPY daily data.
     """
     print("🚀 Starting Initial Sync (Daily Data for SMA 200)...")
     log_system_event("MarketHarvester", "INFO", "Starting Initial Sync (Daily Data for SMA 200)")
+
+    # Sync SYMBOLS
     for symbol in SYMBOLS:
         # Fetch 2 years of daily data to be safe for SMA 200 calculation
         fetch_and_store(symbol, "1d", "2y", "1d")
-        time.sleep(0.2)
+        time.sleep(0.1)
+
+    # Sync SPY (Daily)
+    print("🇺🇸 Syncing SPY Daily Data...")
+    fetch_and_store("SPY", "1d", "2y", "1d")
+
     print("✅ Initial Sync Complete.")
     log_system_event("MarketHarvester", "INFO", "Initial Sync Complete")
 
 def intraday_sync():
     """
-    Runs every 5 minutes to fetch recent 5m data.
+    Runs every 5 minutes (or adaptive loop) to fetch recent data.
+    Implements Eagle Eye: 1m for Hot List, 5m for others.
     """
-    print("🔄 Running Intraday Sync (5m)...")
-    count = 0
+    print("🔄 Running Intraday Sync (Eagle Eye Mode)...")
+
+    hot_list = get_hot_list()
+    if hot_list:
+        print(f"🔥 Hot List (1m Fetch): {', '.join(hot_list)}")
+
+    count_5m = 0
+    count_1m = 0
+
+    # 1. Fetch SPY (5m) - Essential for Macro Filter
+    fetch_and_store("SPY", "5m", "1d", "5m", limit=5)
+
     for symbol in SYMBOLS:
-        # Fetch 1 day of 5m data (covers today's market hours).
-        # We limit to last 5 candles if updating, just to be lean as requested,
-        # but sticking to period="1d" is safest network-wise.
-        # However, passing limit=5 respects the "fetch only last 3-5 candles" directive
-        # for processing/insertion, even if yfinance fetches the day.
-        if fetch_and_store(symbol, "5m", "1d", "5m", limit=5):
-            count += 1
-        time.sleep(0.2)
-    print(f"✅ {count} symbols synced.")
+        # Determine timeframe
+        if symbol in hot_list:
+            # Fetch 1m for Hot List (High Frequency Monitoring)
+            if fetch_and_store(symbol, "1m", "1d", "1m", limit=10):
+                count_1m += 1
+
+            # ALSO fetch 5m for Strategy compatibility
+            if fetch_and_store(symbol, "5m", "1d", "5m", limit=5):
+                count_5m += 1
+
+        else:
+            # Standard 5m fetch
+            if fetch_and_store(symbol, "5m", "1d", "5m", limit=5):
+                count_5m += 1
+
+        time.sleep(0.1)
+
+    print(f"✅ Synced: {count_5m} symbols (5m), {count_1m} symbols (1m).")
+    log_system_event("MarketHarvester", "INFO", f"Synced: {count_5m} symbols (5m), {count_1m} symbols (1m)")
 
 def main():
     print("🚀 Starting Smart Market Harvester (Dual-Mode)...")

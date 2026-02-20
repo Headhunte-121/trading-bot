@@ -8,6 +8,16 @@ if __name__ == "__main__":
 
 from shared.db_utils import get_db_connection, DB_PATH
 
+def add_column_if_not_exists(cursor, table, column, definition):
+    try:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        print(f"Added column '{column}' to table '{table}'.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print(f"Column '{column}' already exists in table '{table}'.")
+        else:
+            print(f"Error adding column '{column}' to table '{table}': {e}")
+
 def setup_database():
     """Initializes the database and creates tables if they do not exist."""
     print(f"Setting up database at {DB_PATH}...")
@@ -22,8 +32,6 @@ def setup_database():
         print(f"Dropped legacy table: {table}")
 
     # --- MARKET DATA ---
-    # Check for new schema or recreate
-    # We will assume a fresh start or simple existence check
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_data (
             symbol TEXT NOT NULL,
@@ -38,23 +46,27 @@ def setup_database():
         )
     """)
 
-    # --- TECHNICAL INDICATORS ---
+    # --- TECHNICAL INDICATORS (Recreated with timeframe & new indicators) ---
+    cursor.execute("DROP TABLE IF EXISTS technical_indicators")
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS technical_indicators (
+        CREATE TABLE technical_indicators (
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
+            timeframe TEXT NOT NULL DEFAULT '5m',
             rsi_14 REAL,
             sma_50 REAL,
             sma_200 REAL,
             lower_bb REAL,
-            PRIMARY KEY (symbol, timestamp)
+            vwap REAL,
+            atr_14 REAL,
+            volume_sma_20 REAL,
+            PRIMARY KEY (symbol, timestamp, timeframe)
         )
     """)
+    print("Recreated technical_indicators table with new columns.")
 
-    # --- AI PREDICTIONS (Updated for Dual-Model Ensemble) ---
-    # We drop the old table to ensure schema update
-    cursor.execute("DROP TABLE IF EXISTS ai_predictions")
-
+    # --- AI PREDICTIONS ---
+    # We keep the existing table if it exists, assuming schema is stable
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +80,6 @@ def setup_database():
             UNIQUE(symbol, timestamp)
         )
     """)
-    print("Created ai_predictions table with Ensemble support.")
 
     # --- TRADE SIGNALS ---
     cursor.execute("""
@@ -83,6 +94,8 @@ def setup_database():
             order_id TEXT
         )
     """)
+    # Add new column 'atr' to trade_signals
+    add_column_if_not_exists(cursor, "trade_signals", "atr", "REAL")
 
     # --- EXECUTED TRADES ---
     cursor.execute("""
@@ -95,6 +108,8 @@ def setup_database():
             side TEXT
         )
     """)
+    # Add new column 'signal_type' to executed_trades
+    add_column_if_not_exists(cursor, "executed_trades", "signal_type", "TEXT")
 
     # --- SYSTEM LOGS ---
     cursor.execute("""
