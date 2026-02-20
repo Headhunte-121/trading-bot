@@ -17,7 +17,7 @@ def process_signals():
     api_secret = os.getenv("APCA_API_SECRET_KEY")
     base_url = os.getenv("APCA_API_BASE_URL")
 
-    # Fix: Ensure all keys exist
+    # Ensure all keys exist
     if not all([api_key, api_secret, base_url]):
         print("Error: Alpaca environment variables not set.")
         return
@@ -41,17 +41,22 @@ def process_signals():
             print(f"Found {len(signals)} signals to process.")
 
         for signal in signals:
-            # FIX: Access columns by name using the Row factory
-            signal_id = signal['id']
-            symbol = signal['symbol']
-            qty = int(signal['size']) # Convert to int for safety
-            
-            # FIX: Access the specific column before converting to float
-            stop_loss_price = round(float(signal['stop_loss']), 2)
-
-            print(f"Processing signal {signal_id}: BUY {qty} {symbol} with SL {stop_loss_price}")
-
             try:
+                # Correctly access columns by name using the Row factory
+                signal_id = signal['id']
+                symbol = signal['symbol']
+                qty = int(signal['size']) # Convert to int for safety
+
+                # Correctly access the stop_loss column before converting to float
+                stop_loss_val = signal['stop_loss']
+                if stop_loss_val is None:
+                    print(f"Skipping signal {signal_id}: Stop loss is None.")
+                    continue
+
+                stop_loss_price = round(float(stop_loss_val), 2)
+
+                print(f"Processing signal {signal_id}: BUY {qty} {symbol} with SL {stop_loss_price}")
+
                 # Submit Market Order with OTO Stop Loss
                 order = api.submit_order(
                     symbol=symbol,
@@ -107,8 +112,8 @@ def process_signals():
                 print(f"💰 Signal {signal_id} EXECUTED and logged! 💰")
 
             except Exception as e:
-                print(f"❌ Error processing signal {signal_id} with Alpaca: {e}")
-                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                print(f"❌ Error processing signal {signal['id']} with Alpaca: {e}")
+                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal['id'],))
                 conn.commit()
 
     except Exception as e:

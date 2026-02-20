@@ -40,8 +40,9 @@ def run_mean_reversion():
 
         for row in candidates:
             # FIX: Explicitly convert Row objects to strings for the next query
-            symbol = str(row['symbol'])
-            timestamp = str(row['timestamp'])
+            # Accessing columns by name since row_factory is sqlite3.Row
+            symbol = row['symbol']
+            timestamp = row['timestamp']
 
             # Step 2: Check news sentiment
             query_news = """
@@ -52,6 +53,7 @@ def run_mean_reversion():
                 AND timestamp <= ?
             """
 
+            # The parameters must be the string values, not the Row object itself
             cursor.execute(query_news, (symbol, timestamp, timestamp))
             result = cursor.fetchone()
 

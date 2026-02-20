@@ -2,115 +2,267 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from datetime import datetime
+import datetime
+from datetime import timedelta
+import sys
 
 # Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
 
 # Import shared modules
-import sys
 sys.path.append(BASE_DIR)
 from shared.smart_sleep import get_market_status
 
-def get_data(query):
+def get_data(query, params=None):
     with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql_query(query, conn)
+        return pd.read_sql_query(query, conn, params=params)
+
+def get_gpu_status():
+    """Checks if new sentiment scores have been generated in the last 15 minutes."""
+    try:
+        query = """
+            SELECT COUNT(*) as count
+            FROM raw_news
+            WHERE sentiment_score IS NOT NULL
+            AND timestamp > datetime('now', '-15 minutes')
+        """
+        df = get_data(query)
+        if not df.empty and df['count'].iloc[0] > 0:
+            return True
+        return False
+    except Exception:
+        return False
+
+def get_unread_news_count():
+    """Counts news items ingested in the last 60 minutes."""
+    try:
+        query = """
+            SELECT COUNT(*) as count
+            FROM raw_news
+            WHERE timestamp > datetime('now', '-60 minutes')
+        """
+        df = get_data(query)
+        if not df.empty:
+            return df['count'].iloc[0]
+        return 0
+    except:
+        return 0
+
+def get_biggest_movers():
+    """Calculates top movers based on the last 5-minute close price difference."""
+    try:
+        # Fetch the last two records for every symbol
+        # We need a window function or a self-join. Since SQLite window functions are supported:
+        query = """
+            WITH RankedPrices AS (
+                SELECT
+                    symbol,
+                    close,
+                    timestamp,
+                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) as rn
+                FROM market_data
+            )
+            SELECT
+                now.symbol,
+                now.close as current_price,
+                prev.close as prev_price,
+                ((now.close - prev.close) / prev.close) * 100 as pct_change
+            FROM RankedPrices now
+            JOIN RankedPrices prev ON now.symbol = prev.symbol AND prev.rn = 2
+            WHERE now.rn = 1
+            ORDER BY ABS(pct_change) DESC
+            LIMIT 10
+        """
+        return get_data(query)
+    except Exception as e:
+        # Fallback if table empty or error
+        return pd.DataFrame()
 
 def main():
-    st.set_page_config(page_title="🚀 SwarmTrade AI Dashboard", layout="wide")
+    st.set_page_config(page_title="🚀 SwarmTrade Pro Terminal", layout="wide", initial_sidebar_state="expanded")
     
-    # --- CSS Styling ---
+    # --- CSS Styling for Pro Terminal Look ---
     st.markdown("""
         <style>
-        .main { background-color: #0e1117; }
-        .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3e4259; }
+        .main { background-color: #0e1117; color: #c9d1d9; }
+        .stMetric { background-color: #161b22; padding: 10px; border-radius: 5px; border: 1px solid #30363d; }
+        div[data-testid="stSidebar"] { background-color: #0d1117; border-right: 1px solid #30363d; }
+        h1, h2, h3 { color: #58a6ff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .ticker-box {
+            display: inline-block;
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 5px 10px;
+            margin-right: 10px;
+            font-size: 0.9em;
+            color: #c9d1d9;
+        }
+        .ticker-up { color: #3fb950; }
+        .ticker-down { color: #f85149; }
         </style>
     """, unsafe_allow_html=True)
 
-    st.title("🚀 SwarmTrade AI | Quantum Swarm")
-    st.sidebar.header("Control Panel")
+    # --- 1. Top "Ticker Tape" (Header) ---
+    st.markdown("### 🏛️ Market Movers (Last 5 Min)")
+    movers = get_biggest_movers()
 
-    # --- Market Status Badge ---
+    if not movers.empty:
+        cols = st.columns(len(movers))
+        for i, row in enumerate(movers.itertuples()):
+            color = "ticker-up" if row.pct_change >= 0 else "ticker-down"
+            arrow = "▲" if row.pct_change >= 0 else "▼"
+            with cols[i]:
+                st.markdown(
+                    f"<div class='ticker-box'><span style='font-weight:bold'>{row.symbol}</span><br>"
+                    f"${row.current_price:.2f} <span class='{color}'>{arrow} {row.pct_change:.2f}%</span></div>",
+                    unsafe_allow_html=True
+                )
+    else:
+        st.info("Waiting for market data to populate initial momentum...")
+
+    st.divider()
+
+    # --- 2. System Monitor (Left Sidebar) ---
+    st.sidebar.title("🎛️ System Monitor")
+
+    # Market Status
     status = get_market_status()
+    st.sidebar.markdown(f"**Market Status:**")
     if status['is_open']:
-        st.sidebar.success(status['status_message'])
+        st.sidebar.success(f"🟢 {status['status_message']}")
     else:
-        st.sidebar.error(status['status_message'])
+        st.sidebar.error(f"🔴 {status['status_message']}")
 
-    refresh = st.sidebar.button("🔄 Force Refresh Data")
+    # GPU Status
+    gpu_active = get_gpu_status()
+    st.sidebar.markdown(f"**AI Inference Engine:**")
+    if gpu_active:
+        st.sidebar.success("🟢 GPU: ACTIVE (RTX 5050)")
+    else:
+        st.sidebar.warning("🟡 GPU: STANDBY / SLEEPING")
 
-    # --- Fetch Symbols ---
-    try:
-        symbols = get_data("SELECT DISTINCT symbol FROM market_data")['symbol'].tolist()
-        selected_symbol = st.sidebar.selectbox("Select Asset to Inspect", ["ALL"] + symbols)
-    except:
-        symbols = ["AAPL", "MSFT"]
-        selected_symbol = "ALL"
+    # Unread News
+    unread_count = get_unread_news_count()
+    st.sidebar.metric("Unread News (1h)", f"{unread_count}", delta="Live Feed")
 
-    # --- TOP ROW: Live Metrics ---
-    st.subheader("📊 Market Pulse")
-    col1, col2, col3, col4 = st.columns(4)
+    if st.sidebar.button("🔄 Force Refresh"):
+        st.rerun()
 
-    try:
-        latest_ta = get_data("SELECT symbol, rsi_14, lower_bb FROM technical_indicators ORDER BY timestamp DESC LIMIT 20")
-        latest_sent = get_data("SELECT AVG(sentiment_score) as sent FROM raw_news WHERE sentiment_score IS NOT NULL")
-        
-        avg_rsi = latest_ta['rsi_14'].mean()
-        avg_sent = latest_sent['sent'].iloc[0] if not latest_sent.empty else 0
-
-        col1.metric("Avg Swarm RSI", f"{avg_rsi:.2f}", delta="-2.1" if avg_rsi < 30 else "Normal")
-        col2.metric("AI Sentiment", f"{avg_sent:.2f}", delta="Bullish" if avg_sent > 0.2 else "Bearish")
-        col3.metric("Active Agents", "9/9", delta="Running", delta_color="normal")
-        col4.metric("GPU Load (RTX 5050)", "Active", delta="CUDA Enabled")
-    except:
-        st.warning("Waiting for data to populate...")
-
-   # --- MIDDLE ROW: Sentiment Chart (CLEANED VERSION) ---
-    st.divider()
-    st.subheader("🧠 Swarm Intelligence (Smoothed Sentiment)")
+    # --- 3. Sentiment Heatmap (Main Top) ---
+    st.subheader("🧠 Swarm Intelligence (Sentiment Heatmap)")
     
-    news_df = get_data("SELECT symbol, timestamp, sentiment_score FROM raw_news WHERE sentiment_score IS NOT NULL")
+    # Query for heatmap data: Aggregate sentiment by 30-min buckets
+    heatmap_query = """
+        SELECT
+            symbol,
+            strftime('%Y-%m-%d %H:%M', timestamp) as time_bucket, -- Simplify to minute level first
+            AVG(sentiment_score) as avg_score
+        FROM raw_news
+        WHERE sentiment_score IS NOT NULL
+        GROUP BY symbol, strftime('%Y-%m-%d %H', timestamp), (strftime('%M', timestamp) / 30) -- Group by 30 min chunks approx
+        ORDER BY timestamp DESC
+        LIMIT 500
+    """
+    # Better approach for 30 min buckets in SQL is tricky across dialects, let's do pandas resampling
+    raw_heatmap_query = """
+        SELECT symbol, timestamp, sentiment_score
+        FROM raw_news
+        WHERE sentiment_score IS NOT NULL
+        AND timestamp > datetime('now', '-24 hours')
+    """
 
-    if not news_df.empty:
-        news_df['timestamp'] = pd.to_datetime(news_df['timestamp'])
+    df_sent = get_data(raw_heatmap_query)
+
+    if not df_sent.empty:
+        df_sent['timestamp'] = pd.to_datetime(df_sent['timestamp'])
+        # Resample to 30T
+        # We want Y-Axis (Index) to be Symbols, and X-Axis (Columns) to be Time.
+        # unstack(level=0) makes Symbol the columns.
+        # So we transpose it.
+        heatmap_data = df_sent.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).T
         
-        # RESAMPLING: This is the secret to a clean chart. 
-        # It calculates the average sentiment every 30 minutes.
-        chart_data = news_df.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).ffill()
-        
-        if selected_symbol != "ALL":
-            st.line_chart(chart_data[selected_symbol])
-        else:
-            st.line_chart(chart_data)
+        # Sort columns (Time) descending so newest is left, or ascending so newest is right?
+        # Standard financial charts have newest on the right.
+        heatmap_data = heatmap_data.sort_index(axis=1, ascending=True)
+
+        st.dataframe(
+            heatmap_data.style.background_gradient(cmap='RdYlGn', vmin=-1, vmax=1).format("{:.2f}"),
+            use_container_width=True,
+            height=400
+        )
     else:
-        st.info("AI is still reading the news. Check back in 1 minute.")
+        st.info("No sentiment data available for heatmap.")
 
-    # --- BOTTOM ROW: Technicals & Trades ---
     st.divider()
-    left_col, right_col = st.columns([2, 1])
 
-    with left_col:
-        st.subheader("📉 Technical Scanner")
-        tech_query = "SELECT symbol, timestamp, rsi_14, lower_bb FROM technical_indicators ORDER BY timestamp DESC LIMIT 50"
-        df_tech = get_data(tech_query)
-        
-        # Color coding logic
-        def highlight_rsi(val):
-            color = 'red' if val < 30 else ('green' if val > 70 else 'white')
-            return f'color: {color}; font-weight: bold'
+    # --- 4. The "Action" Zone (Main Bottom) ---
+    col_left, col_right = st.columns([3, 2])
 
-        if not df_tech.empty:
-            st.dataframe(df_tech.style.map(highlight_rsi, subset=['rsi_14']), use_container_width=True)
+    with col_left:
+        st.subheader("📉 Technical Scanner (RSI < 40 or > 70)")
+        # Fetch latest technicals
+        tech_query = """
+            SELECT symbol, timestamp, rsi_14, lower_bb
+            FROM technical_indicators
+            WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
+            AND (rsi_14 < 40 OR rsi_14 > 70)
+            ORDER BY rsi_14 ASC
+        """
+        try:
+            df_tech = get_data(tech_query)
             
-    with right_col:
-        st.subheader("📜 Recent Executions")
-        trade_query = "SELECT symbol, side, price, qty, timestamp FROM executed_trades ORDER BY timestamp DESC LIMIT 10"
-        df_trades = get_data(trade_query)
-        if not df_trades.empty:
-            st.table(df_trades)
-        else:
-            st.info("No trades executed yet. Waiting for Buy Signal.")
+            def style_rsi(val):
+                if val < 30: return 'color: #3fb950; font-weight: bold;' # Deep Green/Buy
+                if val < 40: return 'color: #7ee787;' # Light Green
+                if val > 70: return 'color: #f85149; font-weight: bold;' # Red/Sell
+                return ''
+
+            if not df_tech.empty:
+                st.dataframe(
+                    df_tech.style.map(style_rsi, subset=['rsi_14']),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.success("No extreme RSI anomalies detected at this moment.")
+        except Exception as e:
+            st.error(f"Error loading technicals: {e}")
+
+    with col_right:
+        st.subheader("📜 Live Trade Ledger")
+        trade_query = """
+            SELECT
+                time(timestamp) as time,
+                symbol,
+                side,
+                qty,
+                price
+            FROM executed_trades
+            ORDER BY timestamp DESC
+            LIMIT 20
+        """
+        try:
+            df_trades = get_data(trade_query)
+            if not df_trades.empty:
+                # Format for "Receipt" look
+                for row in df_trades.itertuples():
+                    color = "🟢" if row.side == 'buy' else "🔴"
+                    st.markdown(
+                        f"`{row.time}` {color} **{row.side.upper()}** {row.qty} **{row.symbol}** @ ${row.price:.2f}"
+                    )
+            else:
+                st.info("Ledger is empty. Waiting for signals...")
+        except Exception as e:
+            st.error(f"Error loading trades: {e}")
+
+    # Also show pending signals if any
+    st.subheader("⚠️ Pending Signals")
+    pending_query = "SELECT * FROM trade_signals WHERE status != 'EXECUTED' ORDER BY id DESC LIMIT 5"
+    df_pending = get_data(pending_query)
+    if not df_pending.empty:
+        st.dataframe(df_pending)
 
 if __name__ == "__main__":
     main()
