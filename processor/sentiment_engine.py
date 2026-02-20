@@ -17,7 +17,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
-from shared.smart_sleep import get_market_status
 
 MODEL_NAME = "unsloth/llama-3-8b-Instruct-bnb-4bit"
 
@@ -121,7 +120,7 @@ def main():
     while True:
         conn = get_db_connection()
         if not conn:
-            time.sleep(60)
+            time.sleep(5)
             continue
             
         conn.row_factory = sqlite3.Row 
@@ -145,8 +144,8 @@ def main():
                     prompts = [build_prompt(row['headline'], row['symbol']) for row in batch_rows]
                     
                     # Run inference
-                    # pipeline returns a list of results, each result is a list of generated dicts (usually 1)
-                    results = llm(prompts, do_sample=False, temperature=None, top_p=None)
+                    # Using do_sample=True with low temp to avoid mode collapse/loops
+                    results = llm(prompts, do_sample=True, temperature=0.2, top_p=0.9)
 
                     updates = []
 
@@ -205,10 +204,9 @@ def main():
             except:
                 pass
 
-        # Smart Sleep Logic
-        status = get_market_status()
-        print(f"{status['status_message']}")
-        time.sleep(status['sleep_seconds'])
+        # Simple sleep logic, ignoring market hours
+        print("💤 Queue empty. Sleeping 5s...")
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
