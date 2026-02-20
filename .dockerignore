@@ -1,0 +1,16 @@
+# Ignore Git history
+.git
+.gitignore
+
+# Ignore Python cache
+__pycache__
+*.pyc
+
+# CRITICAL: Ignore the massive AI Model Cache
+hf_cache/
+
+# Ignore the Database (prevents lock errors during build)
+data/
+
+# Ignore Environment secrets (safety)
+.env
