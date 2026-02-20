@@ -4,6 +4,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./ingestor:/app/ingestor
+      - ./shared:/app/shared
     env_file:
       - .env
     command: python shared/schema.py
@@ -14,6 +16,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./processor:/app/processor
+      - ./shared:/app/shared
     env_file:
       - .env
     command: sh -c "while true; do python ingestor/market_harvester.py; python shared/smart_sleep.py; done"
@@ -42,6 +46,8 @@ services:
     shm_size: '2gb'
     volumes:
       - ./data:/app/data
+      - ./processor:/app/processor
+      - ./shared:/app/shared
       - ./hf_cache:/root/.cache/huggingface
     env_file:
       - .env
@@ -65,6 +71,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./strategy:/app/strategy
+      - ./shared:/app/shared
     env_file:
       - .env
     command: sh -c "while true; do python strategy/trend_following.py; python shared/smart_sleep.py; done"
@@ -82,6 +90,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./execution:/app/execution
+      - ./shared:/app/shared
     env_file:
       - .env
     command: sh -c "while true; do python execution/risk_manager.py; python shared/smart_sleep.py; done"
@@ -96,6 +106,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./execution:/app/execution
+      - ./shared:/app/shared
     env_file:
       - .env
     command: sh -c "while true; do python execution/alpaca_executor.py; sleep 60; done"
@@ -111,6 +123,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
+      - ./dashboard:/app/dashboard
+      - ./shared:/app/shared
     env_file:
       - .env
     command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
