@@ -60,6 +60,32 @@ def get_data(query, params=None):
     except Exception as e:
         return pd.DataFrame()
 
+def get_config_value(key, default="AUTO"):
+    try:
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return row['value']
+    except Exception as e:
+        pass
+    return default
+
+def set_config_value(key, value):
+    try:
+        conn = get_db_connection()
+        if conn:
+            conn.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+            conn.close()
+            return True
+    except Exception as e:
+        print(f"Error setting config: {e}")
+    return False
+
 # --- Data Fetching Functions ---
 def get_gpu_load():
     # Estimation based on inference count
@@ -202,12 +228,38 @@ def get_active_signals():
 def render_sidebar():
     st.sidebar.markdown("## 🧬 QUANT TERMINAL")
 
+    # --- System Power Mode Control ---
+    current_mode = get_config_value("sleep_mode", "AUTO")
+
+    mode_map = {
+        "AUTO": "🤖 AUTO",
+        "FORCE_AWAKE": "⚡ FORCE AWAKE",
+        "FORCE_SLEEP": "🌙 FORCE SLEEP"
+    }
+    reverse_mode_map = {v: k for k, v in mode_map.items()}
+
+    selected_label = st.sidebar.radio(
+        "SYSTEM POWER MODE",
+        options=list(mode_map.values()),
+        index=list(mode_map.keys()).index(current_mode) if current_mode in mode_map else 0,
+        key="power_mode_radio"
+    )
+
+    # Handle Change
+    new_mode = reverse_mode_map[selected_label]
+    if new_mode != current_mode:
+        set_config_value("sleep_mode", new_mode)
+        st.rerun()
+
     status = get_market_status()
     status_color = "status-open" if status['is_open'] else "status-closed"
     st.sidebar.markdown(f"""
-        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; margin-bottom: 5px;">
             <span class="{status_color} status-dot"></span>
             <span style="font-weight: bold; color: #E5E7EB;">{status['status_message'].split(' - ')[0]}</span>
+        </div>
+        <div style="font-size: 0.8em; color: #9CA3AF; margin-bottom: 20px;">
+            Interval: {status['sleep_seconds']}s
         </div>
     """, unsafe_allow_html=True)
 
@@ -544,7 +596,8 @@ def main():
         render_radar(radar_data)
 
     with c2:
-        render_chart(st.session_state.selected_symbol, radar_data)
+        selected_symbol = st.session_state.get('selected_symbol', None)
+        render_chart(selected_symbol, radar_data)
 
     st.divider()
 
