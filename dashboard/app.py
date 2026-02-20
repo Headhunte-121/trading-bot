@@ -518,7 +518,7 @@ def main():
                     font=dict(size=40, color="rgba(255, 255, 255, 0.1)")
                 )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.warning("No candle data available for selected symbol.")
     else:
@@ -582,7 +582,7 @@ def main():
 
             st.dataframe(
                 styled_df,
-                use_container_width=True,
+                width="stretch",
                 height=400,
                 hide_index=True,
                 column_config={
