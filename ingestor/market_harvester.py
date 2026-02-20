@@ -75,7 +75,7 @@ def save_to_db(data):
 if __name__ == "__main__":
     setup_database()
 
-    symbols =
+    symbols = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META', 'AVGO', 'TSLA', 'BRK.B', 'WMT', 'LLY', 'JPM', 'XOM', 'V', 'JNJ', 'MU', 'MA', 'ORCL', 'COST', 'ABBV', 'BAC', 'HD', 'CVX', 'PG', 'CAT', 'GE', 'KO', 'AMD', 'NFLX', 'PLTR', 'CSCO', 'MRK', 'LRCX', 'AMAT', 'PM', 'MS', 'RTX', 'GS', 'WFC', 'UNH', 'IBM', 'TMUS', 'MCD', 'AXP', 'LIN', 'GEV', 'PEP', 'INTC', 'VZ']
     print(f"Fetching 5-minute data for {symbols}...")
     market_data = fetch_market_data(symbols)
 
