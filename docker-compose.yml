@@ -52,7 +52,7 @@ services:
       init-db:
         condition: service_completed_successfully
 
-  sentiment_engine:
+  ai_brain:
     build: .
     shm_size: '2gb'  # <--- ADD THIS
     volumes:
@@ -60,7 +60,7 @@ services:
       - ./hf_cache:/root/.cache/huggingface # <--- ADD THIS (Saves model to disk)
     env_file:
       - .env
-    command: python processor/sentiment_engine.py
+    command: python processor/ai_brain.py
     restart: unless-stopped
     deploy:
       resources:
@@ -74,6 +74,7 @@ services:
         condition: service_started
       init-db:
         condition: service_completed_successfully
+
   # --- Strategy Services ---
   strategy_engine:
     build: .
@@ -81,12 +82,12 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    command: sh -c "while true; do python strategy/mean_reversion.py; python shared/smart_sleep.py; done"
+    command: sh -c "while true; do python strategy/trend_surfer.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       ta_calculator:
         condition: service_started
-      sentiment_engine:
+      ai_brain:
         condition: service_started
       init-db:
         condition: service_completed_successfully

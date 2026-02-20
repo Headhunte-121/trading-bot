@@ -15,7 +15,7 @@ def setup_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # market_data
+    # market_data (5-minute candles)
     # Composite Primary Key (symbol, timestamp)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_data (
@@ -27,6 +27,18 @@ def setup_database():
             close REAL,
             volume REAL,
             PRIMARY KEY (symbol, timestamp)
+        )
+    """)
+
+    # market_data_daily (Daily candles with SMA 200)
+    # Composite Primary Key (symbol, date)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS market_data_daily (
+            symbol TEXT NOT NULL,
+            date TEXT NOT NULL,
+            close REAL,
+            sma_200 REAL,
+            PRIMARY KEY (symbol, date)
         )
     """)
 
@@ -46,7 +58,7 @@ def setup_database():
         )
     """)
 
-    # technical_indicators
+    # technical_indicators (5-minute technicals)
     # Composite Primary Key (symbol, timestamp)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS technical_indicators (
@@ -54,7 +66,31 @@ def setup_database():
             timestamp TEXT NOT NULL,
             rsi_14 REAL,
             lower_bb REAL,
+            sma_200 REAL,
             PRIMARY KEY (symbol, timestamp)
+        )
+    """)
+
+    # Attempt migration for sma_200
+    try:
+        cursor.execute("ALTER TABLE technical_indicators ADD COLUMN sma_200 REAL")
+        print("Migrated technical_indicators table: Added sma_200 column.")
+    except sqlite3.OperationalError:
+        # Column likely already exists
+        pass
+
+    # chart_analysis_requests (New for AI Brain)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chart_analysis_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            technical_summary TEXT,
+            status TEXT DEFAULT 'PENDING',
+            ai_prediction TEXT,
+            ai_confidence REAL,
+            ai_reasoning TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 

@@ -54,29 +54,34 @@ def get_unread_news_count():
     except:
         return 0
 
-def get_biggest_movers():
-    """Calculates top movers based on the last 5-minute close price difference."""
+def get_trend_scanner():
+    """
+    Scans for stocks in a healthy trend (Price > SMA 200).
+    Sorts by distance from SMA (Ascending) -> "Buy the Dip" candidates.
+    """
     try:
-        # Fetch the last two records for every symbol
+        # We need the latest close and latest SMA 200
+        # market_data and technical_indicators join on symbol, timestamp
         query = """
-            WITH RankedPrices AS (
+            WITH LatestData AS (
                 SELECT
-                    symbol,
-                    close,
-                    timestamp,
-                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) as rn
-                FROM market_data
+                    m.symbol,
+                    m.close,
+                    t.sma_200,
+                    ROW_NUMBER() OVER (PARTITION BY m.symbol ORDER BY m.timestamp DESC) as rn
+                FROM market_data m
+                JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
+                WHERE t.sma_200 IS NOT NULL
             )
             SELECT
-                now.symbol,
-                now.close as current_price,
-                prev.close as prev_price,
-                ((now.close - prev.close) / prev.close) * 100 as pct_change
-            FROM RankedPrices now
-            JOIN RankedPrices prev ON now.symbol = prev.symbol AND prev.rn = 2
-            WHERE now.rn = 1
-            ORDER BY ABS(pct_change) DESC
-            LIMIT 10
+                symbol,
+                close,
+                sma_200,
+                ((close - sma_200) / sma_200) * 100 as pct_dist
+            FROM LatestData
+            WHERE rn = 1 AND close > sma_200
+            ORDER BY pct_dist ASC
+            LIMIT 15
         """
         return get_data(query)
     except Exception as e:
@@ -121,20 +126,6 @@ def get_technicals(symbol, limit=200):
     except:
         return pd.DataFrame()
 
-def get_trade_signals(symbol, limit=200):
-    """Fetches trade signals for overlay."""
-    try:
-        query = """
-            SELECT * FROM trade_signals
-            WHERE symbol = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        df = get_data(query, params=(symbol, limit))
-        return df
-    except:
-        return pd.DataFrame()
-
 def get_symbol_trades(symbol):
     """Fetches executed trades for a specific symbol to overlay on chart."""
     try:
@@ -167,6 +158,21 @@ def get_executed_trades(limit=20):
     except:
         return pd.DataFrame()
 
+def get_latest_analysis(symbol):
+    """Fetches the latest AI analysis for the symbol."""
+    try:
+        query = """
+            SELECT * FROM chart_analysis_requests
+            WHERE symbol = ? AND status = 'COMPLETED'
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """
+        df = get_data(query, params=(symbol,))
+        if not df.empty:
+            return df.iloc[0]
+        return None
+    except:
+        return None
 
 # --- Main Application ---
 
@@ -231,8 +237,7 @@ def main():
 
         .ticker-symbol { font-weight: bold; font-size: 1.1em; color: #FFFFFF; }
         .ticker-price { font-size: 0.9em; color: #AAAAAA; }
-        .ticker-up { color: #00FF94; }
-        .ticker-down { color: #FF3B30; }
+        .ticker-highlight { color: #00FF94; }
 
         /* News Cards */
         .news-card {
@@ -261,6 +266,18 @@ def main():
             animation: pulse-red-border 2s infinite;
             border: 1px solid #FF3B30 !important;
         }
+
+        /* Analysis Box */
+        .analysis-box {
+            background: rgba(0, 212, 255, 0.05);
+            border: 1px solid rgba(0, 212, 255, 0.2);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 10px;
+        }
+        .prediction-bullish { color: #00FF94; font-weight: bold; }
+        .prediction-bearish { color: #FF3B30; font-weight: bold; }
+        .prediction-neutral { color: #AAAAAA; font-weight: bold; }
 
         /* Status Heartbeat Animation */
         @keyframes pulse-green-glow {
@@ -344,7 +361,7 @@ def main():
     load = get_gpu_status() # 0 to 100
     st.sidebar.markdown("### RTX 5050 LOAD")
     st.sidebar.progress(load / 100)
-    st.sidebar.caption(f"Load: {load}% (News Processing)")
+    st.sidebar.caption(f"Load: {load}% (AI Brain)")
 
     st.sidebar.divider()
 
@@ -359,9 +376,11 @@ def main():
     st.sidebar.markdown("### TARGET FOCUS")
     all_symbols = get_all_symbols()
 
-    # Determine default logic
-    movers = get_biggest_movers()
-    default_symbol = movers.iloc[0]['symbol'] if not movers.empty else (all_symbols[0] if all_symbols else None)
+    # Scanner Data
+    scanner_df = get_trend_scanner()
+
+    # Default symbol logic
+    default_symbol = scanner_df.iloc[0]['symbol'] if not scanner_df.empty else (all_symbols[0] if all_symbols else None)
 
     target_index = 0
     if default_symbol and default_symbol in all_symbols:
@@ -377,115 +396,151 @@ def main():
     if st.sidebar.button("🔄 REFRESH SYSTEM"):
         st.rerun()
 
-    # --- Zone A: Top Header (Ticker Tape) ---
+    # --- Zone A: Scanner (Trend Surfer) ---
     st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
-    st.markdown("#### ⚡ BIGGEST MOVERS (5M)")
+    st.markdown("#### 🌊 TREND SURFER SCANNER (Price > SMA 200)")
 
-    if not movers.empty:
-        # Create HTML for ticker tape
+    if not scanner_df.empty:
+        # Create HTML for ticker tape style
         ticker_html = "<div class='ticker-container'>"
-        for row in movers.itertuples():
-            color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
-            arrow = "▲" if row.pct_change >= 0 else "▼"
+        for row in scanner_df.itertuples():
+            dist = row.pct_dist
             ticker_html += f"""
                 <div class='ticker-card'>
                     <div class='ticker-symbol'>{row.symbol}</div>
-                    <div class='ticker-price'>${row.current_price:.2f}</div>
-                    <div class='{color_class}'>{arrow} {row.pct_change:.2f}%</div>
+                    <div class='ticker-price'>${row.close:.2f}</div>
+                    <div class='ticker-highlight'>+{dist:.2f}% > SMA</div>
                 </div>
             """
         ticker_html += "</div>"
         st.markdown(ticker_html, unsafe_allow_html=True)
     else:
-        st.info("Awaiting Market Data...")
+        st.info("No healthy trends detected. Market might be Bearish.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     # --- Zone B: Main View (Chart & Technicals) ---
-    st.markdown(f"### 🎯 TARGET: {selected_symbol}")
+    col_chart, col_ai = st.columns([3, 1])
 
-    if selected_symbol:
-        df_candles = get_recent_candles(selected_symbol)
-        df_tech = get_technicals(selected_symbol)
-        df_trades = get_symbol_trades(selected_symbol)
+    with col_chart:
+        st.markdown(f"### 🎯 TARGET: {selected_symbol}")
         
-        if not df_candles.empty:
-            # Create Plotly Subplot
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.05,
-                row_heights=[0.7, 0.3],
-                specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
-            )
+        if selected_symbol:
+            df_candles = get_recent_candles(selected_symbol)
+            df_tech = get_technicals(selected_symbol)
+            df_trades = get_symbol_trades(selected_symbol)
 
-            # Candlestick
-            fig.add_trace(go.Candlestick(
-                x=df_candles['timestamp'],
-                open=df_candles['open'],
-                high=df_candles['high'],
-                low=df_candles['low'],
-                close=df_candles['close'],
-                name='OHLC',
-                increasing_line_color='#00FF94',
-                decreasing_line_color='#FF3B30'
-            ), row=1, col=1)
+            if not df_candles.empty:
+                # Create Plotly Subplot
+                fig = make_subplots(
+                    rows=2, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.05,
+                    row_heights=[0.7, 0.3],
+                    specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+                )
 
-            # Overlay Executed Trades
-            if not df_trades.empty:
-                buys = df_trades[df_trades['side'] == 'buy']
-                sells = df_trades[df_trades['side'] == 'sell']
+                # Candlestick
+                fig.add_trace(go.Candlestick(
+                    x=df_candles['timestamp'],
+                    open=df_candles['open'],
+                    high=df_candles['high'],
+                    low=df_candles['low'],
+                    close=df_candles['close'],
+                    name='OHLC',
+                    increasing_line_color='#00FF94',
+                    decreasing_line_color='#FF3B30'
+                ), row=1, col=1)
 
-                if not buys.empty:
-                    fig.add_trace(go.Scatter(
-                        x=buys['timestamp'],
-                        y=buys['price'],
-                        mode='markers',
-                        name='Buy',
-                        marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
+                # SMA 200 Overlay
+                if not df_tech.empty and 'sma_200' in df_tech.columns:
+                     fig.add_trace(go.Scatter(
+                        x=df_tech['timestamp'],
+                        y=df_tech['sma_200'],
+                        mode='lines',
+                        name='SMA 200',
+                        line=dict(color='#FFA500', width=2) # Orange for SMA
                     ), row=1, col=1)
 
-                if not sells.empty:
+                # Overlay Executed Trades
+                if not df_trades.empty:
+                    buys = df_trades[df_trades['side'] == 'buy']
+                    sells = df_trades[df_trades['side'] == 'sell']
+
+                    if not buys.empty:
+                        fig.add_trace(go.Scatter(
+                            x=buys['timestamp'],
+                            y=buys['price'],
+                            mode='markers',
+                            name='Buy',
+                            marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
+                        ), row=1, col=1)
+
+                    if not sells.empty:
+                        fig.add_trace(go.Scatter(
+                            x=sells['timestamp'],
+                            y=sells['price'],
+                            mode='markers',
+                            name='Sell',
+                            marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
+                        ), row=1, col=1)
+
+                # RSI
+                if not df_tech.empty:
                     fig.add_trace(go.Scatter(
-                        x=sells['timestamp'],
-                        y=sells['price'],
-                        mode='markers',
-                        name='Sell',
-                        marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
-                    ), row=1, col=1)
+                        x=df_tech['timestamp'],
+                        y=df_tech['rsi_14'],
+                        mode='lines',
+                        name='RSI',
+                        line=dict(color='#00d4ff', width=1)
+                    ), row=2, col=1)
 
-            # RSI
-            if not df_tech.empty:
-                fig.add_trace(go.Scatter(
-                    x=df_tech['timestamp'],
-                    y=df_tech['rsi_14'],
-                    mode='lines',
-                    name='RSI',
-                    line=dict(color='#00d4ff', width=1)
-                ), row=2, col=1)
+                    # RSI Levels (35 and 55 for Trend Surfer)
+                    fig.add_hline(y=55, line_dash="dot", line_color="#FF3B30", row=2, col=1)
+                    fig.add_hline(y=35, line_dash="dot", line_color="#00FF94", row=2, col=1)
 
-                # RSI Levels
-                fig.add_hline(y=70, line_dash="dot", line_color="#FF3B30", row=2, col=1)
-                fig.add_hline(y=30, line_dash="dot", line_color="#00FF94", row=2, col=1)
+                # Styling
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    height=600,
+                    showlegend=True,
+                    legend=dict(x=0, y=1, orientation="h"),
+                    xaxis_rangeslider_visible=False
+                )
 
-            # Styling
-            fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=10, r=10, t=10, b=10),
-                height=600,
-                showlegend=False,
-                xaxis_rangeslider_visible=False
-            )
+                # Remove range slider from candlestick
+                fig.update_xaxes(rangeslider_visible=False)
 
-            # Remove range slider from candlestick
-            fig.update_xaxes(rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No candle data available.")
 
-            st.plotly_chart(fig, use_container_width=True)
+    with col_ai:
+        st.markdown(f"### 🧠 AI ANALYST")
+        if selected_symbol:
+            analysis = get_latest_analysis(selected_symbol)
+            if analysis is not None:
+                pred = analysis['ai_prediction']
+                conf = analysis['ai_confidence']
+                reason = analysis['ai_reasoning']
+
+                pred_class = "prediction-neutral"
+                if pred == 'BULLISH': pred_class = "prediction-bullish"
+                elif pred == 'BEARISH': pred_class = "prediction-bearish"
+
+                st.markdown(f"""
+                    <div class='analysis-box'>
+                        <div style='font-size: 1.2em;' class='{pred_class}'>{pred} ({conf:.2f})</div>
+                        <div style='font-size: 0.9em; margin-top: 8px; color: #DDD;'>{reason}</div>
+                        <div style='font-size: 0.7em; margin-top: 10px; color: #888;'>Generated: {analysis['timestamp']}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("No AI Analysis available yet.")
         else:
-            st.warning("No candle data available for selected symbol.")
-    else:
-        st.warning("No symbols found in database.")
+            st.info("Select a symbol.")
 
     # --- Split Bottom Section ---
     col_news, col_ledger = st.columns([1, 1])
