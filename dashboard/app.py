@@ -261,17 +261,19 @@ def main():
     st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
     st.markdown("#### 🌊 TREND SURFER SCANNER (Price > SMA 200)")
 
-    if not movers.empty:
+    if not scanner_df.empty:
         # Create HTML for ticker tape
         ticker_html_list = []
-        for row in movers.itertuples():
-            color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
-            arrow = "▲" if row.pct_change >= 0 else "▼"
+        for row in scanner_df.itertuples():
+            pct_change = getattr(row, 'pct_dist', 0)
+            color_class = "ticker-up" if pct_change >= 0 else "ticker-down"
+            # arrow = "▲" if pct_change >= 0 else "▼" # Not used in HTML currently
+
             card_html = f"""
                 <div class='ticker-card'>
                     <div class='ticker-symbol'>{row.symbol}</div>
                     <div class='ticker-price'>${row.close:.2f}</div>
-                    <div class='ticker-highlight'>+{dist:.2f}% > SMA</div>
+                    <div class='ticker-highlight'>+{pct_change:.2f}% > SMA</div>
                 </div>
             """
             ticker_html_list.append(card_html)
@@ -303,15 +305,9 @@ def main():
                 specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
             )
 
-            # Determine colors based on market status
-            is_market_open = market_status['is_open']
-
-            if is_market_open:
-                inc_color = '#00FF94'
-                dec_color = '#FF3B30'
-            else:
-                inc_color = '#555555' # Grayscale for closed
-                dec_color = '#333333'
+            # Fixed Colors (Neon) - Gap-less Dynamics
+            inc_color = '#00FF94'
+            dec_color = '#FF3B30'
 
             # Candlestick
             fig.add_trace(go.Candlestick(
@@ -339,31 +335,7 @@ def main():
                         marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
                     ), row=1, col=1)
 
-                # Overlay Executed Trades
-                if not df_trades.empty:
-                    buys = df_trades[df_trades['side'] == 'buy']
-                    sells = df_trades[df_trades['side'] == 'sell']
-
-                    if not buys.empty:
-                        fig.add_trace(go.Scatter(
-                            x=buys['timestamp'],
-                            y=buys['price'],
-                            mode='markers',
-                            name='Buy',
-                            marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
-                        ), row=1, col=1)
-
-                    if not sells.empty:
-                        fig.add_trace(go.Scatter(
-                            x=sells['timestamp'],
-                            y=sells['price'],
-                            mode='markers',
-                            name='Sell',
-                            marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
-                        ), row=1, col=1)
-
-                # RSI
-                if not df_tech.empty:
+                if not sells.empty:
                     fig.add_trace(go.Scatter(
                         x=sells['timestamp'],
                         y=sells['price'],
@@ -405,23 +377,14 @@ def main():
                 tickformat="%H:%M",
                 rangeslider_visible=False,
                 rangebreaks=[
-                    dict(bounds=["sat", "mon"]),   # Hide weekends
-                    dict(bounds=[16, 9.5], pattern="hour"), # Hide hours outside 9:30am - 4:00pm
+                    dict(bounds=["sat", "mon"]),   # Hide weekends only
                 ]
             )
             fig.update_yaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
 
-            # Market Closed Annotation
-            if not is_market_open:
-                fig.add_annotation(
-                    text="MARKET CLOSED",
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5,
-                    showarrow=False,
-                    font=dict(size=40, color="rgba(255, 255, 255, 0.1)")
-                )
+            # No Market Closed Annotation
 
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Select a symbol.")
 
@@ -475,15 +438,17 @@ def main():
             
             def color_side(val):
                 if isinstance(val, str):
-                    color = '#00FF94' if val.lower() == 'buy' else '#FF3B30'
-                    return f'color: {color}; font-weight: bold;'
+                    if val.lower() == 'buy':
+                        return 'background-color: #00FF94; color: white; border-radius: 10px; padding: 2px 8px; font-weight: bold;'
+                    else:
+                        return 'background-color: #FF3B30; color: white; border-radius: 10px; padding: 2px 8px; font-weight: bold;'
                 return ''
 
             styled_df = trades_df.style.map(color_side, subset=['side'])
 
             st.dataframe(
                 styled_df,
-                width="stretch",
+                use_container_width=True,
                 height=400,
                 hide_index=True,
                 column_config={
