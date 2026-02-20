@@ -55,7 +55,7 @@ def load_llm():
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        batch_size=16, # Enable batching
+        batch_size=8, # Reduced batch size to prevent OOM
         max_new_tokens=128,
         pad_token_id=tokenizer.eos_token_id
     )
@@ -136,27 +136,44 @@ def main():
             if rows:
                 print(f"🧠 AI: Found {len(rows)} headlines. Analyzing in batches...")
 
-                # Chunk into batches of 16
-                batch_size = 16
+                # Chunk into batches of 8 (reduced from 16)
+                batch_size = 8
                 total_processed = 0
                 
                 for i in range(0, len(rows), batch_size):
                     batch_rows = rows[i:i+batch_size]
                     prompts = [build_prompt(row['headline'], row['symbol']) for row in batch_rows]
                     
-                    # Run inference
-                    # Using do_sample=True with low temp to avoid mode collapse/loops
-                    # Increased temp to 0.3 to allow for more negativity variance
-                    results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+                    results = []
+                    try:
+                        # Run inference
+                        # Using do_sample=True with low temp to avoid mode collapse/loops
+                        # Increased temp to 0.3 to allow for more negativity variance
+                        results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+                    except Exception as e:
+                        print(f"❌ Inference Error for batch: {e}")
+                        results = []
 
                     updates = []
 
-                    for row, res in zip(batch_rows, results):
-                        # res is like [{'generated_text': '...'}]
-                        generated_text = res[0]['generated_text']
+                    # Iterate over batch_rows, check corresponding result
+                    for idx, row in enumerate(batch_rows):
+                        generated_text = ""
+                        data = None
 
-                        response_part = generated_text.split("assistant<|end_header_id|>")[-1]
-                        data = parse_llm_output(response_part)
+                        # Check if result exists for this row
+                        if idx < len(results):
+                            res = results[idx]
+                            # Handle different pipeline output formats (list or dict)
+                            if isinstance(res, list) and len(res) > 0:
+                                generated_text = res[0].get('generated_text', '')
+                            elif isinstance(res, dict):
+                                generated_text = res.get('generated_text', '')
+
+                            response_part = generated_text.split("assistant<|end_header_id|>")[-1]
+                            data = parse_llm_output(response_part)
+                        else:
+                            print(f"⚠️ Missing result for {row['symbol']} (ID: {row['id']}). Marking as processed (0.0).")
 
                         sentiment = 0.0
                         relevance = 0.0
@@ -191,6 +208,9 @@ def main():
                 print(f"✅ Finished cycle. Processed {total_processed} items.")
 
                 if total_processed > 0:
+                    # If we processed items successfully, check immediately for more backlog
+                    # BUT verify if updates stuck. If next fetch returns same rows, we might loop.
+                    # Assuming update_db_batch worked.
                     print(f"🚀 Backlog detected. Continuing immediately...")
                     conn.close()
                     continue
@@ -206,9 +226,9 @@ def main():
             except:
                 pass
 
-        # Simple sleep logic, ignoring market hours
-        print("💤 Queue empty. Sleeping 5s...")
-        time.sleep(5)
+        # Sleep logic: 15 minutes (900s) as requested
+        print("💤 Queue empty. Sleeping 15 minutes...")
+        time.sleep(900)
 
 if __name__ == "__main__":
     main()
