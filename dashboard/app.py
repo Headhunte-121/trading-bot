@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import os
-import datetime
-from datetime import timedelta
 import sys
+import datetime
 
 # Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,25 +15,29 @@ DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
 sys.path.append(BASE_DIR)
 from shared.smart_sleep import get_market_status
 
+# --- Data Fetching ---
+
 def get_data(query, params=None):
     with sqlite3.connect(DB_PATH) as conn:
         return pd.read_sql_query(query, conn, params=params)
 
 def get_gpu_status():
-    """Checks if new sentiment scores have been generated in the last 15 minutes."""
+    """Calculates 'load' based on news items processed in the last 5 minutes."""
     try:
         query = """
             SELECT COUNT(*) as count
             FROM raw_news
-            WHERE sentiment_score IS NOT NULL
-            AND timestamp > datetime('now', '-15 minutes')
+            WHERE timestamp > datetime('now', '-5 minutes')
         """
         df = get_data(query)
-        if not df.empty and df['count'].iloc[0] > 0:
-            return True
-        return False
+        if not df.empty:
+            count = df['count'].iloc[0]
+            # Map 0-10 items to 0-100%
+            load = min(count * 10, 100)
+            return load
+        return 0
     except Exception:
-        return False
+        return 0
 
 def get_unread_news_count():
     """Counts news items ingested in the last 60 minutes."""
@@ -53,7 +58,6 @@ def get_biggest_movers():
     """Calculates top movers based on the last 5-minute close price difference."""
     try:
         # Fetch the last two records for every symbol
-        # We need a window function or a self-join. Since SQLite window functions are supported:
         query = """
             WITH RankedPrices AS (
                 SELECT
@@ -76,185 +80,484 @@ def get_biggest_movers():
         """
         return get_data(query)
     except Exception as e:
-        # Fallback if table empty or error
         return pd.DataFrame()
 
+def get_all_symbols():
+    """Fetches all unique symbols from the market_data table."""
+    try:
+        query = "SELECT DISTINCT symbol FROM market_data ORDER BY symbol"
+        df = get_data(query)
+        if not df.empty:
+            return df['symbol'].tolist()
+        return []
+    except:
+        return []
+
+def get_recent_candles(symbol, limit=200):
+    """Fetches the last N candles for a given symbol."""
+    try:
+        query = """
+            SELECT * FROM market_data
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        df = get_data(query, params=(symbol, limit))
+        return df.sort_values(by='timestamp', ascending=True)
+    except:
+        return pd.DataFrame()
+
+def get_technicals(symbol, limit=200):
+    """Fetches technical indicators for a given symbol."""
+    try:
+        query = """
+            SELECT * FROM technical_indicators
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        df = get_data(query, params=(symbol, limit))
+        return df.sort_values(by='timestamp', ascending=True)
+    except:
+        return pd.DataFrame()
+
+def get_trade_signals(symbol, limit=200):
+    """Fetches trade signals for overlay."""
+    try:
+        query = """
+            SELECT * FROM trade_signals
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        df = get_data(query, params=(symbol, limit))
+        return df
+    except:
+        return pd.DataFrame()
+
+def get_symbol_trades(symbol):
+    """Fetches executed trades for a specific symbol to overlay on chart."""
+    try:
+        query = "SELECT * FROM executed_trades WHERE symbol = ? ORDER BY timestamp ASC"
+        return get_data(query, params=(symbol,))
+    except:
+        return pd.DataFrame()
+
+def get_raw_news(limit=50):
+    """Fetches raw news for the feed."""
+    try:
+        query = """
+            SELECT * FROM raw_news
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        return get_data(query, params=(limit,))
+    except:
+        return pd.DataFrame()
+
+def get_executed_trades(limit=20):
+    """Fetches executed trades for the ledger."""
+    try:
+        query = """
+            SELECT * FROM executed_trades
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        return get_data(query, params=(limit,))
+    except:
+        return pd.DataFrame()
+
+
+# --- Main Application ---
+
 def main():
-    st.set_page_config(page_title="🚀 SwarmTrade Pro Terminal", layout="wide", initial_sidebar_state="expanded")
-    
-    # --- CSS Styling for Pro Terminal Look ---
+    st.set_page_config(
+        page_title="🚀 SwarmTrade Pro Terminal",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # --- CSS Styling (Project Neon) ---
     st.markdown("""
         <style>
-        .main { background-color: #0e1117; color: #c9d1d9; }
-        .stMetric { background-color: #161b22; padding: 10px; border-radius: 5px; border: 1px solid #30363d; }
-        div[data-testid="stSidebar"] { background-color: #0d1117; border-right: 1px solid #30363d; }
-        h1, h2, h3 { color: #58a6ff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .ticker-box {
-            display: inline-block;
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 4px;
-            padding: 5px 10px;
-            margin-right: 10px;
-            font-size: 0.9em;
-            color: #c9d1d9;
+        /* Global Reset & Font */
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+        * {
+            font-family: 'JetBrains Mono', monospace !important;
         }
-        .ticker-up { color: #3fb950; }
-        .ticker-down { color: #f85149; }
+
+        /* Background */
+        .stApp {
+            background-color: #0B0E14;
+            color: #E0E0E0;
+        }
+
+        /* Glassmorphism Containers */
+        .glass-panel {
+            background: rgba(20, 25, 35, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: #080a0f;
+            border-right: 1px solid #1f2937;
+        }
+
+        /* Header / Ticker Tape */
+        .ticker-container {
+            display: flex;
+            overflow-x: auto;
+            gap: 15px;
+            padding-bottom: 10px;
+            scrollbar-width: thin;
+        }
+
+        .ticker-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            padding: 8px 12px;
+            min-width: 140px;
+            text-align: center;
+        }
+
+        .ticker-symbol { font-weight: bold; font-size: 1.1em; color: #FFFFFF; }
+        .ticker-price { font-size: 0.9em; color: #AAAAAA; }
+        .ticker-up { color: #00FF94; }
+        .ticker-down { color: #FF3B30; }
+
+        /* News Cards */
+        .news-card {
+            background: rgba(0, 0, 0, 0.2);
+            border-left: 3px solid #555;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 0 4px 4px 0;
+            transition: all 0.2s;
+        }
+        .news-card:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .news-headline { font-weight: bold; font-size: 0.9em; color: #E0E0E0; margin-bottom: 4px; }
+        .news-meta { font-size: 0.75em; color: #888; display: flex; justify-content: space-between; }
+        .badge-sentiment { padding: 2px 6px; border-radius: 4px; font-size: 0.7em; font-weight: bold; }
+
+        /* Urgency Pulsating Animation */
+        @keyframes pulse-red-border {
+            0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); border-color: #FF3B30; }
+            70% { box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); border-color: #FF3B30; }
+            100% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); border-color: #FF3B30; }
+        }
+
+        .urgent-news {
+            animation: pulse-red-border 2s infinite;
+            border: 1px solid #FF3B30 !important;
+        }
+
+        /* Status Heartbeat Animation */
+        @keyframes pulse-green-glow {
+            0% { box-shadow: 0 0 0 0 rgba(0, 255, 148, 0.4); }
+            70% { box-shadow: 0 0 0 8px rgba(0, 255, 148, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 255, 148, 0); }
+        }
+        @keyframes pulse-red-glow {
+            0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); }
+            70% { box-shadow: 0 0 0 8px rgba(255, 59, 48, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); }
+        }
+
+        .status-dot-green {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #00FF94;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse-green-glow 2s infinite;
+        }
+        .status-dot-red {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #FF3B30;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse-red-glow 2s infinite;
+        }
+
+        /* Hide Streamlit Elements */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0B0E14;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
         </style>
     """, unsafe_allow_html=True)
 
-    # --- 1. Top "Ticker Tape" (Header) ---
-    st.markdown("### 🏛️ Market Movers (Last 5 Min)")
-    movers = get_biggest_movers()
+    # --- Sidebar: System Nucleus ---
+    st.sidebar.title("🧬 SYSTEM NUCLEUS")
 
-    if not movers.empty:
-        cols = st.columns(len(movers))
-        for i, row in enumerate(movers.itertuples()):
-            color = "ticker-up" if row.pct_change >= 0 else "ticker-down"
-            arrow = "▲" if row.pct_change >= 0 else "▼"
-            with cols[i]:
-                st.markdown(
-                    f"<div class='ticker-box'><span style='font-weight:bold'>{row.symbol}</span><br>"
-                    f"${row.current_price:.2f} <span class='{color}'>{arrow} {row.pct_change:.2f}%</span></div>",
-                    unsafe_allow_html=True
-                )
+    # Heartbeat
+    market_status = get_market_status()
+    st.sidebar.markdown("### SYSTEM STATUS")
+    if market_status['is_open']:
+        st.sidebar.markdown(
+            "<div style='display:flex; align-items:center;'>"
+            "<span class='status-dot-green'></span>"
+            "<span>MARKET OPEN</span></div>",
+            unsafe_allow_html=True
+        )
     else:
-        st.info("Waiting for market data to populate initial momentum...")
+        st.sidebar.markdown(
+            f"<div style='display:flex; align-items:center;'>"
+            f"<span class='status-dot-red'></span>"
+            f"<span>MARKET CLOSED ({market_status['status_message']})</span></div>",
+            unsafe_allow_html=True
+        )
 
-    st.divider()
+    st.sidebar.divider()
 
-    # --- 2. System Monitor (Left Sidebar) ---
-    st.sidebar.title("🎛️ System Monitor")
+    # RTX 5050 Load
+    load = get_gpu_status() # 0 to 100
+    st.sidebar.markdown("### RTX 5050 LOAD")
+    st.sidebar.progress(load / 100)
+    st.sidebar.caption(f"Load: {load}% (News Processing)")
 
-    # Market Status
-    status = get_market_status()
-    st.sidebar.markdown(f"**Market Status:**")
-    if status['is_open']:
-        st.sidebar.success(f"🟢 {status['status_message']}")
-    else:
-        st.sidebar.error(f"🔴 {status['status_message']}")
-
-    # GPU Status
-    gpu_active = get_gpu_status()
-    st.sidebar.markdown(f"**AI Inference Engine:**")
-    if gpu_active:
-        st.sidebar.success("🟢 GPU: ACTIVE (RTX 5050)")
-    else:
-        st.sidebar.warning("🟡 GPU: STANDBY / SLEEPING")
+    st.sidebar.divider()
 
     # Unread News
-    unread_count = get_unread_news_count()
-    st.sidebar.metric("Unread News (1h)", f"{unread_count}", delta="Live Feed")
+    unread = get_unread_news_count()
+    st.sidebar.markdown("### UNREAD INTEL")
+    st.sidebar.metric("Last 60m", unread, delta=None)
 
-    if st.sidebar.button("🔄 Force Refresh"):
+    st.sidebar.divider()
+
+    # Target Focus (Symbol Selector)
+    st.sidebar.markdown("### TARGET FOCUS")
+    all_symbols = get_all_symbols()
+
+    # Determine default logic
+    movers = get_biggest_movers()
+    default_symbol = movers.iloc[0]['symbol'] if not movers.empty else (all_symbols[0] if all_symbols else None)
+
+    target_index = 0
+    if default_symbol and default_symbol in all_symbols:
+        target_index = all_symbols.index(default_symbol)
+
+    selected_symbol = st.sidebar.selectbox(
+        "Select Asset",
+        options=all_symbols,
+        index=target_index,
+        key="symbol_selector"
+    )
+    
+    if st.sidebar.button("🔄 REFRESH SYSTEM"):
         st.rerun()
 
-    # --- 3. Sentiment Heatmap (Main Top) ---
-    st.subheader("🧠 Swarm Intelligence (Sentiment Heatmap)")
-    
-    # Query for raw data to aggregate in pandas
-    raw_heatmap_query = """
-        SELECT symbol, timestamp, sentiment_score
-        FROM raw_news
-        WHERE sentiment_score IS NOT NULL
-        AND timestamp > datetime('now', '-24 hours')
-    """
+    # --- Zone A: Top Header (Ticker Tape) ---
+    st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
+    st.markdown("#### ⚡ BIGGEST MOVERS (5M)")
 
-    df_sent = get_data(raw_heatmap_query)
-
-    if not df_sent.empty:
-        df_sent['timestamp'] = pd.to_datetime(df_sent['timestamp'])
-        
-        # Resample to 30T buckets
-        # Group by Symbol, then resample Time
-        # unstack(level=0) moves Symbol to columns
-        # Transpose (.T) moves Time to columns (X-Axis) and Symbol to index (Y-Axis)
-        try:
-            heatmap_data = df_sent.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).T
-
-            # Sort columns (Time) ascending so newest is right
-            heatmap_data = heatmap_data.sort_index(axis=1, ascending=True)
-
-            st.dataframe(
-                heatmap_data.style.background_gradient(cmap='RdYlGn', vmin=-1, vmax=1).format("{:.2f}"),
-                use_container_width=True,
-                height=400
-            )
-        except Exception as e:
-            st.error(f"Error generating heatmap: {e}")
+    if not movers.empty:
+        # Create HTML for ticker tape
+        ticker_html = "<div class='ticker-container'>"
+        for row in movers.itertuples():
+            color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
+            arrow = "▲" if row.pct_change >= 0 else "▼"
+            ticker_html += f"""
+                <div class='ticker-card'>
+                    <div class='ticker-symbol'>{row.symbol}</div>
+                    <div class='ticker-price'>${row.current_price:.2f}</div>
+                    <div class='{color_class}'>{arrow} {row.pct_change:.2f}%</div>
+                </div>
+            """
+        ticker_html += "</div>"
+        st.markdown(ticker_html, unsafe_allow_html=True)
     else:
-        st.info("No sentiment data available for heatmap.")
+        st.info("Awaiting Market Data...")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
+    # --- Zone B: Main View (Chart & Technicals) ---
+    st.markdown(f"### 🎯 TARGET: {selected_symbol}")
 
-    # --- 4. The "Action" Zone (Main Bottom) ---
-    col_left, col_right = st.columns([3, 2])
+    if selected_symbol:
+        df_candles = get_recent_candles(selected_symbol)
+        df_tech = get_technicals(selected_symbol)
+        df_trades = get_symbol_trades(selected_symbol)
+        
+        if not df_candles.empty:
+            # Create Plotly Subplot
+            fig = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                row_heights=[0.7, 0.3],
+                specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+            )
 
-    with col_left:
-        st.subheader("📉 Technical Scanner (RSI < 40 or > 70)")
-        # Fetch latest technicals for each symbol
-        tech_query = """
-            SELECT symbol, timestamp, rsi_14, lower_bb
-            FROM technical_indicators
-            WHERE (rsi_14 < 40 OR rsi_14 > 70)
-            GROUP BY symbol
-            HAVING timestamp = MAX(timestamp)
-            ORDER BY rsi_14 ASC
-        """
-        try:
-            df_tech = get_data(tech_query)
+            # Candlestick
+            fig.add_trace(go.Candlestick(
+                x=df_candles['timestamp'],
+                open=df_candles['open'],
+                high=df_candles['high'],
+                low=df_candles['low'],
+                close=df_candles['close'],
+                name='OHLC',
+                increasing_line_color='#00FF94',
+                decreasing_line_color='#FF3B30'
+            ), row=1, col=1)
+
+            # Overlay Executed Trades
+            if not df_trades.empty:
+                buys = df_trades[df_trades['side'] == 'buy']
+                sells = df_trades[df_trades['side'] == 'sell']
+
+                if not buys.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buys['timestamp'],
+                        y=buys['price'],
+                        mode='markers',
+                        name='Buy',
+                        marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
+                    ), row=1, col=1)
+
+                if not sells.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sells['timestamp'],
+                        y=sells['price'],
+                        mode='markers',
+                        name='Sell',
+                        marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
+                    ), row=1, col=1)
+
+            # RSI
+            if not df_tech.empty:
+                fig.add_trace(go.Scatter(
+                    x=df_tech['timestamp'],
+                    y=df_tech['rsi_14'],
+                    mode='lines',
+                    name='RSI',
+                    line=dict(color='#00d4ff', width=1)
+                ), row=2, col=1)
+
+                # RSI Levels
+                fig.add_hline(y=70, line_dash="dot", line_color="#FF3B30", row=2, col=1)
+                fig.add_hline(y=30, line_dash="dot", line_color="#00FF94", row=2, col=1)
+
+            # Styling
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=600,
+                showlegend=False,
+                xaxis_rangeslider_visible=False
+            )
+
+            # Remove range slider from candlestick
+            fig.update_xaxes(rangeslider_visible=False)
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No candle data available for selected symbol.")
+    else:
+        st.warning("No symbols found in database.")
+
+    # --- Split Bottom Section ---
+    col_news, col_ledger = st.columns([1, 1])
+
+    # --- Zone C: Intelligence Feed ---
+    with col_news:
+        st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
+        st.subheader("📡 INTELLIGENCE FEED")
+
+        news_df = get_raw_news()
+        if not news_df.empty:
+            # Scrollable container using height
+            with st.container(height=400):
+                for row in news_df.itertuples():
+                    urgency = getattr(row, 'urgency', 0)
+                    urgency_class = "urgent-news" if urgency > 7 else ""
+
+                    # Sentiment Color Logic
+                    score = getattr(row, 'sentiment_score', 0)
+                    if score > 0:
+                        sentiment_color = "#00FF94" # Green
+                    elif score < 0:
+                        sentiment_color = "#FF3B30" # Red
+                    else:
+                        sentiment_color = "#AAAAAA" # Grey
+
+                    st.markdown(f"""
+                        <div class='news-card {urgency_class}' style='border-left-color: {sentiment_color};'>
+                            <div class='news-headline'>{row.headline}</div>
+                            <div class='news-meta'>
+                                <span>{row.symbol} | {row.timestamp}</span>
+                                <span class='badge-sentiment' style='background: {sentiment_color}20; color: {sentiment_color};'>
+                                    Score: {score:.2f}
+                                </span>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("No intelligence data captured.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- Zone D: The Ledger ---
+    with col_ledger:
+        st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
+        st.subheader("📒 EXECUTED TRADES")
+
+        trades_df = get_executed_trades()
+        if not trades_df.empty:
             
-            def style_rsi(val):
-                if val < 30: return 'color: #3fb950; font-weight: bold;' # Deep Green/Buy
-                if val < 40: return 'color: #7ee787;' # Light Green
-                if val > 70: return 'color: #f85149; font-weight: bold;' # Red/Sell
+            def color_side(val):
+                if isinstance(val, str):
+                    color = '#00FF94' if val.lower() == 'buy' else '#FF3B30'
+                    return f'color: {color}; font-weight: bold;'
                 return ''
 
-            if not df_tech.empty:
-                st.dataframe(
-                    df_tech.style.map(style_rsi, subset=['rsi_14']),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.success("No extreme RSI anomalies detected at this moment.")
-        except Exception as e:
-            st.error(f"Error loading technicals: {e}")
+            styled_df = trades_df.style.map(color_side, subset=['side'])
 
-    with col_right:
-        st.subheader("📜 Live Trade Ledger")
-        trade_query = """
-            SELECT
-                time(timestamp) as time,
-                symbol,
-                side,
-                qty,
-                price
-            FROM executed_trades
-            ORDER BY timestamp DESC
-            LIMIT 20
-        """
-        try:
-            df_trades = get_data(trade_query)
-            if not df_trades.empty:
-                # Format for "Receipt" look
-                for row in df_trades.itertuples():
-                    color = "🟢" if row.side == 'buy' else "🔴"
-                    st.markdown(
-                        f"`{row.time}` {color} **{row.side.upper()}** {row.qty} **{row.symbol}** @ ${row.price:.2f}"
-                    )
-            else:
-                st.info("Ledger is empty. Waiting for signals...")
-        except Exception as e:
-            st.error(f"Error loading trades: {e}")
-
-    # Also show pending signals if any
-    st.subheader("⚠️ Pending Signals")
-    pending_query = "SELECT * FROM trade_signals WHERE status != 'EXECUTED' AND status != 'FAILED' ORDER BY id DESC LIMIT 5"
-    df_pending = get_data(pending_query)
-    if not df_pending.empty:
-        st.dataframe(df_pending)
+            st.dataframe(
+                styled_df,
+                use_container_width=True,
+                height=400,
+                hide_index=True,
+                column_config={
+                    "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "qty": st.column_config.NumberColumn("Size"),
+                    "side": st.column_config.TextColumn("Side"),
+                    "timestamp": st.column_config.DatetimeColumn("Time", format="%m-%d %H:%M")
+                }
+            )
+        else:
+            st.info("Ledger empty. No executions recorded.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
