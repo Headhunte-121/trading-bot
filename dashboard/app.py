@@ -7,8 +7,14 @@ import os
 import sys
 import datetime
 import time
+import warnings
 from streamlit_autorefresh import st_autorefresh
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+
+# Suppress Warnings (Deprecation & Future)
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*use_container_width.*")
 
 # Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
