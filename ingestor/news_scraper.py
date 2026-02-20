@@ -47,12 +47,12 @@ def fetch_news(symbol):
         return []
 
 def save_news(conn, news_items, symbol):
-    """Inserts news items into the raw_news table."""
+    """Inserts news items into the raw_news table using batch insertion."""
     if not news_items:
         return
 
     cursor = conn.cursor()
-    count = 0
+    to_insert = []
 
     for item in news_items:
         try:
@@ -63,22 +63,27 @@ def save_news(conn, news_items, symbol):
             if unix_ts and headline:
                 # Convert Unix timestamp to ISO 8601 (UTC)
                 ts_iso = datetime.datetime.fromtimestamp(unix_ts, datetime.timezone.utc).isoformat()
-
-                # Insert into database using INSERT OR IGNORE to handle duplicates based on UNIQUE constraint
-                # Explicitly set relevance and urgency to NULL
-                cursor.execute("""
-                    INSERT OR IGNORE INTO raw_news (symbol, timestamp, headline, sentiment_score, relevance, urgency)
-                    VALUES (?, ?, ?, NULL, NULL, NULL)
-                """, (symbol, ts_iso, headline))
-
-                if cursor.rowcount > 0:
-                    count += 1
+                to_insert.append((symbol, ts_iso, headline))
         except Exception as e:
             print(f"Error processing news item: {e}")
 
-    conn.commit()
-    if count > 0:
-        print(f"✅ Inserted {count} new news items for {symbol}.")
+    if not to_insert:
+        return
+
+    try:
+        # Insert into database using INSERT OR IGNORE to handle duplicates based on UNIQUE constraint
+        # Explicitly set relevance and urgency to NULL
+        cursor.executemany("""
+            INSERT OR IGNORE INTO raw_news (symbol, timestamp, headline, sentiment_score, relevance, urgency)
+            VALUES (?, ?, ?, NULL, NULL, NULL)
+        """, to_insert)
+
+        count = cursor.rowcount
+        conn.commit()
+        if count > 0:
+            print(f"✅ Inserted {count} new news items for {symbol}.")
+    except Exception as e:
+        print(f"❌ Database error during batch insert for {symbol}: {e}")
 
 def main():
     print("Starting news scraper...")
