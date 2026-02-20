@@ -40,6 +40,8 @@ def setup_database():
             timestamp TEXT NOT NULL,
             headline TEXT,
             sentiment_score REAL,
+            relevance REAL,
+            urgency INTEGER,
             UNIQUE(symbol, timestamp, headline)
         )
     """)
