@@ -153,19 +153,7 @@ def main():
     # --- 3. Sentiment Heatmap (Main Top) ---
     st.subheader("🧠 Swarm Intelligence (Sentiment Heatmap)")
     
-    # Query for heatmap data: Aggregate sentiment by 30-min buckets
-    heatmap_query = """
-        SELECT
-            symbol,
-            strftime('%Y-%m-%d %H:%M', timestamp) as time_bucket, -- Simplify to minute level first
-            AVG(sentiment_score) as avg_score
-        FROM raw_news
-        WHERE sentiment_score IS NOT NULL
-        GROUP BY symbol, strftime('%Y-%m-%d %H', timestamp), (strftime('%M', timestamp) / 30) -- Group by 30 min chunks approx
-        ORDER BY timestamp DESC
-        LIMIT 500
-    """
-    # Better approach for 30 min buckets in SQL is tricky across dialects, let's do pandas resampling
+    # Query for raw data to aggregate in pandas
     raw_heatmap_query = """
         SELECT symbol, timestamp, sentiment_score
         FROM raw_news
@@ -177,21 +165,24 @@ def main():
 
     if not df_sent.empty:
         df_sent['timestamp'] = pd.to_datetime(df_sent['timestamp'])
-        # Resample to 30T
-        # We want Y-Axis (Index) to be Symbols, and X-Axis (Columns) to be Time.
-        # unstack(level=0) makes Symbol the columns.
-        # So we transpose it.
-        heatmap_data = df_sent.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).T
         
-        # Sort columns (Time) descending so newest is left, or ascending so newest is right?
-        # Standard financial charts have newest on the right.
-        heatmap_data = heatmap_data.sort_index(axis=1, ascending=True)
+        # Resample to 30T buckets
+        # Group by Symbol, then resample Time
+        # unstack(level=0) moves Symbol to columns
+        # Transpose (.T) moves Time to columns (X-Axis) and Symbol to index (Y-Axis)
+        try:
+            heatmap_data = df_sent.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).T
 
-        st.dataframe(
-            heatmap_data.style.background_gradient(cmap='RdYlGn', vmin=-1, vmax=1).format("{:.2f}"),
-            use_container_width=True,
-            height=400
-        )
+            # Sort columns (Time) ascending so newest is right
+            heatmap_data = heatmap_data.sort_index(axis=1, ascending=True)
+
+            st.dataframe(
+                heatmap_data.style.background_gradient(cmap='RdYlGn', vmin=-1, vmax=1).format("{:.2f}"),
+                use_container_width=True,
+                height=400
+            )
+        except Exception as e:
+            st.error(f"Error generating heatmap: {e}")
     else:
         st.info("No sentiment data available for heatmap.")
 
@@ -202,12 +193,13 @@ def main():
 
     with col_left:
         st.subheader("📉 Technical Scanner (RSI < 40 or > 70)")
-        # Fetch latest technicals
+        # Fetch latest technicals for each symbol
         tech_query = """
             SELECT symbol, timestamp, rsi_14, lower_bb
             FROM technical_indicators
-            WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
-            AND (rsi_14 < 40 OR rsi_14 > 70)
+            WHERE (rsi_14 < 40 OR rsi_14 > 70)
+            GROUP BY symbol
+            HAVING timestamp = MAX(timestamp)
             ORDER BY rsi_14 ASC
         """
         try:
@@ -259,7 +251,7 @@ def main():
 
     # Also show pending signals if any
     st.subheader("⚠️ Pending Signals")
-    pending_query = "SELECT * FROM trade_signals WHERE status != 'EXECUTED' ORDER BY id DESC LIMIT 5"
+    pending_query = "SELECT * FROM trade_signals WHERE status != 'EXECUTED' AND status != 'FAILED' ORDER BY id DESC LIMIT 5"
     df_pending = get_data(pending_query)
     if not df_pending.empty:
         st.dataframe(df_pending)

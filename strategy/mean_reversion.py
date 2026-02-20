@@ -17,11 +17,14 @@ def run_mean_reversion():
     cursor = conn.cursor()
 
     try:
-        # Cutoff time is 5 minutes to ensure fresh data
-        cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
-        cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+        # We only look for signals in the last hour to prevent processing old history
+        # but ensure we catch recent missed signals.
+        lookback_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        lookback_iso = lookback_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         # Step 1: Find candidates
+        # We look for RSI < 30 and Close < Lower Bollinger Band
+        # signal must not already exist
         query_candidates = """
             SELECT t.symbol, t.timestamp, t.rsi_14, t.lower_bb, m.close
             FROM technical_indicators t
@@ -30,35 +33,44 @@ def run_mean_reversion():
             WHERE m.close < t.lower_bb
             AND t.rsi_14 < 30
             AND s.id IS NULL
-            AND t.timestamp <= ?
+            AND t.timestamp >= ?
+            ORDER BY t.timestamp ASC
         """
 
-        cursor.execute(query_candidates, (cutoff_iso,))
+        cursor.execute(query_candidates, (lookback_iso,))
         candidates = cursor.fetchall()
 
-        print(f"Found {len(candidates)} potential candidates.")
+        print(f"Found {len(candidates)} potential candidates in the last hour.")
 
         for row in candidates:
-            # FIX: Explicitly convert Row objects to strings for the next query
-            # Accessing columns by name since row_factory is sqlite3.Row
             symbol = row['symbol']
             timestamp = row['timestamp']
 
-            # Step 2: Check news sentiment
+            # Parse timestamp to calculate news window
+            try:
+                ts_dt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                # Handle potential non-ISO strings if any
+                print(f"Skipping {symbol} due to invalid timestamp: {timestamp}")
+                continue
+
+            start_ts_dt = ts_dt - datetime.timedelta(hours=12)
+            start_ts_iso = start_ts_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+            # Step 2: Check news sentiment (last 12 hours relative to the candle time)
             query_news = """
-                SELECT AVG(sentiment_score), COUNT(*)
+                SELECT AVG(sentiment_score) as avg_score, COUNT(*) as count
                 FROM raw_news
                 WHERE symbol = ?
-                AND timestamp > datetime(?, '-12 hours')
+                AND timestamp > ?
                 AND timestamp <= ?
             """
 
-            # The parameters must be the string values, not the Row object itself
-            cursor.execute(query_news, (symbol, timestamp, timestamp))
+            cursor.execute(query_news, (symbol, start_ts_iso, timestamp))
             result = cursor.fetchone()
 
-            avg_sentiment = result[0]
-            count = result[1]
+            avg_sentiment = result['avg_score']
+            count = result['count']
 
             # Step 3: Insert signal if conditions met
             # Condition: Sentiment > 0.3 (Strong Positive)
@@ -70,7 +82,10 @@ def run_mean_reversion():
                     VALUES (?, ?, 'BUY', 'PENDING', NULL, NULL)
                 """, (symbol, timestamp))
             elif count > 0:
-                print(f"Ignored {symbol}. RSI low, but sentiment ({avg_sentiment:.2f}) not convincing.")
+                print(f"Ignored {symbol} at {timestamp}. RSI low, but sentiment ({avg_sentiment:.2f}) not convincing.")
+            else:
+                 # No news, ignore or maybe take a risk? Strategy says we need sentiment.
+                 pass
 
         conn.commit()
         print("Strategy cycle completed.")
@@ -79,6 +94,8 @@ def run_mean_reversion():
         print(f"Database error: {e}")
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         conn.close()
 

@@ -60,6 +60,7 @@ def setup_database():
 
     # trade_signals
     # Auto-Incrementing ID
+    # Added order_id for tracking Alpaca orders
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trade_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,9 +69,18 @@ def setup_database():
             signal_type TEXT,
             size REAL,
             stop_loss REAL,
-            status TEXT
+            status TEXT,
+            order_id TEXT
         )
     """)
+
+    # Attempt migration for order_id if table already existed without it
+    try:
+        cursor.execute("ALTER TABLE trade_signals ADD COLUMN order_id TEXT")
+        print("Migrated trade_signals table: Added order_id column.")
+    except sqlite3.OperationalError:
+        # Column likely already exists
+        pass
 
     # executed_trades
     # Auto-Incrementing ID
