@@ -212,13 +212,7 @@ def main():
             color = "#00FF94" if pct >= 0 else "#FF3B30"
             sign = "+" if pct >= 0 else ""
 
-            card_html = f"""
-                <div class='ticker-card'>
-                    <div class='ticker-symbol'>{row.symbol}</div>
-                    <div class='ticker-price'>${row.close:.2f}</div>
-                    <div class='ticker-highlight' style='color: {color};'>{sign}{pct:.2f}%</div>
-                </div>
-            """
+            card_html = f"<div class='ticker-card'><div class='ticker-symbol'>{row.symbol}</div><div class='ticker-price'>${row.close:.2f}</div><div class='ticker-highlight' style='color: {color};'>{sign}{pct:.2f}%</div></div>"
             ticker_html_list.append(card_html)
 
         st.markdown(f"<div class='ticker-container'>{''.join(ticker_html_list)}</div>", unsafe_allow_html=True)
@@ -248,7 +242,6 @@ def main():
                     "predicted_pct_change": "{:+.2f}%",
                     "rsi_14": "{:.1f}"
                 }),
-                use_container_width=True,
                 height=500,
                 hide_index=True
             )
@@ -307,7 +300,7 @@ def main():
                     xaxis_rangeslider_visible=False
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
             else:
                 st.warning(f"No data for {selected_symbol}")
         else:
@@ -322,7 +315,7 @@ def main():
     with col_sig:
         st.caption("Active Signals")
         sig_df = get_pending_signals()
-        st.dataframe(sig_df, use_container_width=True, height=300, hide_index=True)
+        st.dataframe(sig_df, height=300, hide_index=True)
 
     with col_exec:
         st.caption("Executed Trades")
@@ -336,7 +329,6 @@ def main():
                     "price": "${:.2f}",
                     "qty": "{:.0f}"
                 }),
-                use_container_width=True,
                 height=300,
                 hide_index=True
             )

@@ -109,7 +109,7 @@ def run_predictions(pipeline):
         # Batch Predict
         # pipeline.predict accepts a list of tensors
         forecasts = pipeline.predict(
-            context=contexts,
+            contexts,
             prediction_length=6, # 6 steps ahead (30 mins)
             num_samples=20       # 20 sample paths
         )
