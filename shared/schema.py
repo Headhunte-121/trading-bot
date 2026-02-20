@@ -15,88 +15,75 @@ def setup_database():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # market_data (5-minute candles)
-    # Composite Primary Key (symbol, timestamp)
+    # --- DROP LEGACY TABLES ---
+    tables_to_drop = ["raw_news", "market_data_daily", "chart_analysis_requests"]
+    for table in tables_to_drop:
+        cursor.execute(f"DROP TABLE IF EXISTS {table}")
+        print(f"Dropped legacy table: {table}")
+
+    # --- MARKET DATA ---
+    # Modified to support dual-timeframes
+    # Primary Key: (symbol, timestamp, timeframe)
+    # If the table exists but has the old schema, we drop it to re-initialize correctly.
+    # Check if 'timeframe' column exists
+    cursor.execute("PRAGMA table_info(market_data)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'timeframe' not in columns and 'market_data' in tables_to_drop:
+        # Logic above handles explicit drops, but for market_data we might need to be more aggressive if we want to enforce the new PK
+        pass
+
+    # Actually, let's just DROP market_data to ensure clean state for the new PK structure
+    # The harvester will refill it.
+    cursor.execute("DROP TABLE IF EXISTS market_data")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_data (
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
             open REAL,
             high REAL,
             low REAL,
             close REAL,
             volume REAL,
-            PRIMARY KEY (symbol, timestamp)
+            PRIMARY KEY (symbol, timestamp, timeframe)
         )
     """)
 
-    # market_data_daily (Daily candles with SMA 200)
-    # Composite Primary Key (symbol, date)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS market_data_daily (
-            symbol TEXT NOT NULL,
-            date TEXT NOT NULL,
-            close REAL,
-            sma_200 REAL,
-            PRIMARY KEY (symbol, date)
-        )
-    """)
+    # --- TECHNICAL INDICATORS ---
+    # Added sma_200 and sma_50
+    # Primary Key: (symbol, timestamp)
+    # We will drop and recreate to ensure schema compliance
+    cursor.execute("DROP TABLE IF EXISTS technical_indicators")
 
-    # raw_news
-    # Auto-Incrementing ID
-    # Added UNIQUE constraint for deduplication: symbol, timestamp, headline
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS raw_news (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            headline TEXT,
-            sentiment_score REAL,
-            relevance REAL,
-            urgency INTEGER,
-            UNIQUE(symbol, timestamp, headline)
-        )
-    """)
-
-    # technical_indicators (5-minute technicals)
-    # Composite Primary Key (symbol, timestamp)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS technical_indicators (
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             rsi_14 REAL,
-            lower_bb REAL,
+            sma_50 REAL,
             sma_200 REAL,
+            lower_bb REAL,
             PRIMARY KEY (symbol, timestamp)
         )
     """)
 
-    # Attempt migration for sma_200
-    try:
-        cursor.execute("ALTER TABLE technical_indicators ADD COLUMN sma_200 REAL")
-        print("Migrated technical_indicators table: Added sma_200 column.")
-    except sqlite3.OperationalError:
-        # Column likely already exists
-        pass
-
-    # chart_analysis_requests (New for AI Brain)
+    # --- AI PREDICTIONS ---
+    # New Table
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chart_analysis_requests (
+        CREATE TABLE IF NOT EXISTS ai_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            technical_summary TEXT,
-            status TEXT DEFAULT 'PENDING',
-            ai_prediction TEXT,
-            ai_confidence REAL,
-            ai_reasoning TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            current_price REAL,
+            predicted_price REAL,
+            predicted_pct_change REAL,
+            UNIQUE(symbol, timestamp)
         )
     """)
 
-    # trade_signals
-    # Auto-Incrementing ID
-    # Added order_id for tracking Alpaca orders
+    # --- TRADE SIGNALS ---
+    # Kept largely the same, ensuring order_id exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trade_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,16 +97,7 @@ def setup_database():
         )
     """)
 
-    # Attempt migration for order_id if table already existed without it
-    try:
-        cursor.execute("ALTER TABLE trade_signals ADD COLUMN order_id TEXT")
-        print("Migrated trade_signals table: Added order_id column.")
-    except sqlite3.OperationalError:
-        # Column likely already exists
-        pass
-
-    # executed_trades
-    # Auto-Incrementing ID
+    # --- EXECUTED TRADES ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS executed_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,10 +108,6 @@ def setup_database():
             side TEXT
         )
     """)
-
-    # Enable WAL mode explicitly on setup
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
 
     conn.commit()
     conn.close()

@@ -16,21 +16,7 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    # Changed from 3600 to 300 (5 minutes)
     command: sh -c "while true; do python ingestor/market_harvester.py; python shared/smart_sleep.py; done"
-    restart: unless-stopped
-    depends_on:
-      init-db:
-        condition: service_completed_successfully
-
-  news_scraper:
-    build: .
-    volumes:
-      - ./data:/app/data
-    env_file:
-      - .env
-    # Changed from 3600 to 300 (5 minutes)
-    command: sh -c "while true; do python ingestor/news_scraper.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       init-db:
@@ -43,7 +29,6 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    # Changed from 3600 to 300 (5 minutes)
     command: sh -c "while true; do python processor/ta_calculator.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
@@ -52,15 +37,15 @@ services:
       init-db:
         condition: service_completed_successfully
 
-  ai_brain:
+  predictive_engine:
     build: .
-    shm_size: '2gb'  # <--- ADD THIS
+    shm_size: '2gb'
     volumes:
       - ./data:/app/data
-      - ./hf_cache:/root/.cache/huggingface # <--- ADD THIS (Saves model to disk)
+      - ./hf_cache:/root/.cache/huggingface
     env_file:
       - .env
-    command: python processor/ai_brain.py
+    command: python processor/predictive_engine.py
     restart: unless-stopped
     deploy:
       resources:
@@ -70,7 +55,7 @@ services:
               count: 1
               capabilities: [gpu]
     depends_on:
-      news_scraper:
+      market_harvester:
         condition: service_started
       init-db:
         condition: service_completed_successfully
@@ -82,12 +67,12 @@ services:
       - ./data:/app/data
     env_file:
       - .env
-    command: sh -c "while true; do python strategy/trend_surfer.py; python shared/smart_sleep.py; done"
+    command: sh -c "while true; do python strategy/trend_following.py; python shared/smart_sleep.py; done"
     restart: unless-stopped
     depends_on:
       ta_calculator:
         condition: service_started
-      ai_brain:
+      predictive_engine:
         condition: service_started
       init-db:
         condition: service_completed_successfully

@@ -8,7 +8,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_NAME = "trade_history.db"
 DB_PATH = os.path.join(DATA_DIR, DB_NAME)
 
-def get_db_connection(db_path=None, timeout=30.0):
+def get_db_connection(db_path=None, timeout=60.0):
     """
     Establishes a connection to the SQLite database with configured timeout and journal mode.
 
@@ -33,6 +33,7 @@ def get_db_connection(db_path=None, timeout=30.0):
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;") # Recommended for WAL mode
+        conn.execute("PRAGMA busy_timeout=5000;") # Wait up to 5000ms for a lock
     except sqlite3.Error:
         # Might fail if database is locked, but connection should handle it via timeout
         pass

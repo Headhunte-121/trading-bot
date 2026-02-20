@@ -11,7 +11,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. THE "HEAVY HITTER" LAYER
-# I removed the version pin on torch so it grabs the one compatible with Python 3.12
 RUN pip install --no-cache-dir \
     torch \
     transformers \
@@ -23,8 +22,7 @@ RUN pip install --no-cache-dir \
     accelerate \
     yfinance \
     alpaca-trade-api \
-    finnhub-python \
-    --default-timeout=2000
+    git+https://github.com/amazon-science/chronos-forecasting.git
 
 # 3. The "Delta" Layer
 COPY requirements.txt .
