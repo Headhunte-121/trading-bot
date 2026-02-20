@@ -103,7 +103,7 @@ if __name__ == "__main__":
     market_data = fetch_market_data(symbols)
 
     # CRITICAL FIX: Checking truthiness of a Dictionary, not a DataFrame
-    if market_data:
+    if market_data is not None and len(market_data) > 0:
         print(f"Saving data to {DB_PATH}...")
         save_to_db(market_data)
     else:
