@@ -13,17 +13,17 @@ def run_mean_reversion():
     """
     print("Running Mean Reversion Strategy...")
     conn = get_db_connection()
+    conn.row_factory = sqlite3.Row # CRITICAL: Enable column access by name
     cursor = conn.cursor()
 
     try:
-        # CHANGED: Cutoff time is now 5 minutes instead of 1 hour!
-        # This prevents it from ignoring fresh signals.
+        # Cutoff time is 5 minutes to ensure fresh data
         cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
         cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         # Step 1: Find candidates
         query_candidates = """
-            SELECT t.symbol, t.timestamp
+            SELECT t.symbol, t.timestamp, t.rsi_14, t.lower_bb, m.close
             FROM technical_indicators t
             JOIN market_data m ON t.symbol = m.symbol AND t.timestamp = m.timestamp
             LEFT JOIN trade_signals s ON t.symbol = s.symbol AND t.timestamp = s.timestamp
@@ -39,14 +39,11 @@ def run_mean_reversion():
         print(f"Found {len(candidates)} potential candidates.")
 
         for row in candidates:
-            if isinstance(row, sqlite3.Row):
-                symbol = row
-                timestamp = row
-            else:
-                symbol = row
-                timestamp = row
+            # FIX: Explicitly convert Row objects to strings for the next query
+            symbol = str(row['symbol'])
+            timestamp = str(row['timestamp'])
 
-            # Step 2: Check news sentiment (Look back 12 hours instead of 5 for more context)
+            # Step 2: Check news sentiment
             query_news = """
                 SELECT AVG(sentiment_score), COUNT(*)
                 FROM raw_news
@@ -58,20 +55,20 @@ def run_mean_reversion():
             cursor.execute(query_news, (symbol, timestamp, timestamp))
             result = cursor.fetchone()
 
-            avg_sentiment = result
-            count = result
+            avg_sentiment = result[0]
+            count = result[1]
 
             # Step 3: Insert signal if conditions met
-            # condition: avg sentiment > 0 (News must be positive to buy the dip!)
-            if count > 0 and avg_sentiment is not None and avg_sentiment > 0:
+            # Condition: Sentiment > 0.3 (Strong Positive)
+            if count > 0 and avg_sentiment is not None and avg_sentiment > 0.3:
                 print(f"⭐⭐ BUY SIGNAL DETECTED for {symbol} at {timestamp} (Sentiment: {avg_sentiment:.2f}) ⭐⭐")
-                insert_query = """
+                
+                cursor.execute("""
                     INSERT INTO trade_signals (symbol, timestamp, signal_type, status, size, stop_loss)
                     VALUES (?, ?, 'BUY', 'PENDING', NULL, NULL)
-                """
-                cursor.execute(insert_query, (symbol, timestamp))
-            else:
-                print(f"Ignored {symbol} at {timestamp}. RSI was low, but sentiment was negative ({avg_sentiment}).")
+                """, (symbol, timestamp))
+            elif count > 0:
+                print(f"Ignored {symbol}. RSI low, but sentiment ({avg_sentiment:.2f}) not convincing.")
 
         conn.commit()
         print("Strategy cycle completed.")
