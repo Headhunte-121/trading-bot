@@ -494,12 +494,19 @@ def main():
                 xaxis_rangeslider_visible=False
             )
 
-            # Grid Polish
-            fig.update_xaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
+            # Grid Polish & Axis Format
+            fig.update_xaxes(
+                showgrid=True,
+                gridcolor='#1E222D',
+                gridwidth=1,
+                tickformat="%H:%M",
+                rangeslider_visible=False,
+                rangebreaks=[
+                    dict(bounds=["sat", "mon"]),   # Hide weekends
+                    dict(bounds=[16, 9.5], pattern="hour"), # Hide hours outside 9:30am - 4:00pm
+                ]
+            )
             fig.update_yaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
-
-            # Remove range slider explicitly
-            fig.update_xaxes(rangeslider_visible=False)
 
             # Market Closed Annotation
             if not is_market_open:
