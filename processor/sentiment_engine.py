@@ -74,6 +74,7 @@ RULES:
    - relevance: 0.0 (irrelevant) to 1.0 (direct impact)
    - sentiment: -1.0 (very negative) to 1.0 (very positive)
    - urgency: 0 (noise) to 5 (immediate action)
+4. BE CRITICAL: If the news is bad for {symbol} (e.g., lawsuit, earnings miss, competitor gain), you MUST score sentiment between -1.0 and -0.1.
 
 Output strict JSON only. No conversational filler.
 Format: {{"reasoning": "...", "relevance": <float>, "sentiment": <float>, "urgency": <int>}}
@@ -145,7 +146,8 @@ def main():
                     
                     # Run inference
                     # Using do_sample=True with low temp to avoid mode collapse/loops
-                    results = llm(prompts, do_sample=True, temperature=0.2, top_p=0.9)
+                    # Increased temp to 0.3 to allow for more negativity variance
+                    results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
 
                     updates = []
 
