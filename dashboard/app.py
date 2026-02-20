@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import os
 import sys
 import datetime
+import time
 
 # Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -18,77 +19,87 @@ from shared.smart_sleep import get_market_status
 # --- Data Fetching ---
 
 def get_data(query, params=None):
-    with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql_query(query, conn, params=params)
+    try:
+        # Open connection with timeout to avoid locking
+        with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
+            return pd.read_sql_query(query, conn, params=params)
+    except Exception as e:
+        # Return empty dataframe on error
+        return pd.DataFrame()
 
-def get_gpu_status():
-    """Calculates 'load' based on news items processed in the last 5 minutes."""
+def get_gpu_load():
+    """Calculates 'load' based on AI predictions in the last 5 minutes."""
     try:
         query = """
             SELECT COUNT(*) as count
-            FROM raw_news
+            FROM ai_predictions
             WHERE timestamp > datetime('now', '-5 minutes')
         """
         df = get_data(query)
         if not df.empty:
             count = df['count'].iloc[0]
-            # Map 0-10 items to 0-100%
-            load = min(count * 10, 100)
+            # Map 0-50 items to 0-100% (50 symbols)
+            load = min(count * 2, 100)
             return load
         return 0
     except Exception:
         return 0
 
-def get_unread_news_count():
-    """Counts news items ingested in the last 60 minutes."""
+def get_ticker_tape_data():
+    """
+    Fetches Top 5 highest volume stocks (5m) and their % change.
+    """
     try:
+        # Get latest timestamp for 5m data
+        # We want the most recent "snapshot"
         query = """
-            SELECT COUNT(*) as count
-            FROM raw_news
-            WHERE timestamp > datetime('now', '-60 minutes')
+            SELECT symbol, close, open, volume
+            FROM market_data
+            WHERE timeframe = '5m'
+            AND timestamp = (SELECT MAX(timestamp) FROM market_data WHERE timeframe = '5m')
+            ORDER BY volume DESC
+            LIMIT 5
         """
         df = get_data(query)
         if not df.empty:
-            return df['count'].iloc[0]
-        return 0
+            df['pct_change'] = ((df['close'] - df['open']) / df['open']) * 100.0
+            return df
+        return pd.DataFrame()
     except:
-        return 0
+        return pd.DataFrame()
 
-def get_trend_scanner():
+def get_prediction_radar():
     """
-    Scans for stocks in a healthy trend (Price > SMA 200).
-    Sorts by distance from SMA (Ascending) -> "Buy the Dip" candidates.
+    Fetches latest AI predictions merged with RSI.
+    Sorts by predicted_pct_change DESC.
     """
     try:
-        # We need the latest close and latest SMA 200
-        # market_data and technical_indicators join on symbol, timestamp
         query = """
-            WITH LatestData AS (
-                SELECT
-                    m.symbol,
-                    m.close,
-                    t.sma_200,
-                    ROW_NUMBER() OVER (PARTITION BY m.symbol ORDER BY m.timestamp DESC) as rn
-                FROM market_data m
-                JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
-                WHERE t.sma_200 IS NOT NULL
+            WITH LatestPred AS (
+                SELECT symbol, predicted_pct_change, predicted_price, current_price, timestamp
+                FROM ai_predictions
+                WHERE timestamp = (SELECT MAX(timestamp) FROM ai_predictions)
+            ),
+            LatestTech AS (
+                SELECT symbol, rsi_14
+                FROM technical_indicators
+                WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
             )
             SELECT
-                symbol,
-                close,
-                sma_200,
-                ((close - sma_200) / sma_200) * 100 as pct_dist
-            FROM LatestData
-            WHERE rn = 1 AND close > sma_200
-            ORDER BY pct_dist ASC
-            LIMIT 15
+                p.symbol,
+                p.current_price,
+                p.predicted_price,
+                p.predicted_pct_change,
+                t.rsi_14
+            FROM LatestPred p
+            LEFT JOIN LatestTech t ON p.symbol = t.symbol
+            ORDER BY p.predicted_pct_change DESC
         """
         return get_data(query)
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 def get_all_symbols():
-    """Fetches all unique symbols from the market_data table."""
     try:
         query = "SELECT DISTINCT symbol FROM market_data ORDER BY symbol"
         df = get_data(query)
@@ -98,13 +109,17 @@ def get_all_symbols():
     except:
         return []
 
-def get_recent_candles(symbol, limit=200):
-    """Fetches the last N candles for a given symbol."""
+def get_chart_data(symbol, limit=200):
+    """Fetches 5m candles and SMA 200 for chart."""
     try:
+        # Join market_data and technical_indicators
+        # We need 5m candles
         query = """
-            SELECT * FROM market_data
-            WHERE symbol = ?
-            ORDER BY timestamp DESC
+            SELECT m.timestamp, m.open, m.high, m.low, m.close, t.sma_200, t.rsi_14
+            FROM market_data m
+            LEFT JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
+            WHERE m.symbol = ? AND m.timeframe = '5m'
+            ORDER BY m.timestamp DESC
             LIMIT ?
         """
         df = get_data(query, params=(symbol, limit))
@@ -112,33 +127,11 @@ def get_recent_candles(symbol, limit=200):
     except:
         return pd.DataFrame()
 
-def get_technicals(symbol, limit=200):
-    """Fetches technical indicators for a given symbol."""
+def get_recent_trades(limit=20):
     try:
         query = """
-            SELECT * FROM technical_indicators
-            WHERE symbol = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        df = get_data(query, params=(symbol, limit))
-        return df.sort_values(by='timestamp', ascending=True)
-    except:
-        return pd.DataFrame()
-
-def get_symbol_trades(symbol):
-    """Fetches executed trades for a specific symbol to overlay on chart."""
-    try:
-        query = "SELECT * FROM executed_trades WHERE symbol = ? ORDER BY timestamp ASC"
-        return get_data(query, params=(symbol,))
-    except:
-        return pd.DataFrame()
-
-def get_raw_news(limit=50):
-    """Fetches raw news for the feed."""
-    try:
-        query = """
-            SELECT * FROM raw_news
+            SELECT symbol, side, qty, price, timestamp
+            FROM executed_trades
             ORDER BY timestamp DESC
             LIMIT ?
         """
@@ -146,38 +139,21 @@ def get_raw_news(limit=50):
     except:
         return pd.DataFrame()
 
-def get_executed_trades(limit=20):
-    """Fetches executed trades for the ledger."""
+def get_pending_signals():
     try:
         query = """
-            SELECT * FROM executed_trades
+            SELECT symbol, signal_type, status, timestamp
+            FROM trade_signals
+            WHERE status IN ('PENDING', 'SIZED', 'SUBMITTED')
             ORDER BY timestamp DESC
-            LIMIT ?
         """
-        return get_data(query, params=(limit,))
+        return get_data(query)
     except:
         return pd.DataFrame()
-
-def get_latest_analysis(symbol):
-    """Fetches the latest AI analysis for the symbol."""
-    try:
-        query = """
-            SELECT * FROM chart_analysis_requests
-            WHERE symbol = ? AND status = 'COMPLETED'
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """
-        df = get_data(query, params=(symbol,))
-        if not df.empty:
-            return df.iloc[0]
-        return None
-    except:
-        return None
 
 # --- Utilities ---
 
 def load_css(file_path):
-    """Loads a CSS file and injects it into the Streamlit app."""
     if os.path.exists(file_path):
         with open(file_path) as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -186,169 +162,132 @@ def load_css(file_path):
 
 def main():
     st.set_page_config(
-        page_title="🚀 SwarmTrade Pro Terminal",
+        page_title="Deep Quant Chronos Terminal",
         layout="wide",
         initial_sidebar_state="expanded"
     )
 
-    # --- CSS Styling (Project Neon) ---
+    # --- CSS Styling ---
     css_path = os.path.join(os.path.dirname(__file__), "style.css")
     load_css(css_path)
 
-    # --- Sidebar: System Nucleus ---
-    st.sidebar.title("🧬 SYSTEM NUCLEUS")
+    # --- Sidebar ---
+    st.sidebar.title("🧬 DEEP QUANT")
 
-    # Heartbeat
-    market_status = get_market_status()
-    st.sidebar.markdown("### SYSTEM STATUS")
-    if market_status['is_open']:
-        st.sidebar.markdown(
-            "<div style='display:flex; align-items:center;'>"
-            "<span class='status-dot-green'></span>"
-            "<span>MARKET OPEN</span></div>",
-            unsafe_allow_html=True
-        )
+    # Market Status
+    status = get_market_status()
+    if status['is_open']:
+        st.sidebar.success(f"MARKET OPEN")
     else:
-        st.sidebar.markdown(
-            f"<div style='display:flex; align-items:center;'>"
-            f"<span class='status-dot-red'></span>"
-            f"<span>MARKET CLOSED ({market_status['status_message']})</span></div>",
-            unsafe_allow_html=True
-        )
+        st.sidebar.error(f"MARKET CLOSED")
 
     st.sidebar.divider()
 
-    # RTX 5050 Load
-    load = get_gpu_status() # 0 to 100
-    st.sidebar.markdown("### RTX 5050 LOAD")
+    # Hardware Status
+    st.sidebar.markdown("### ⚡ HARDWARE")
+    st.sidebar.text("GPU: NVIDIA RTX 5050")
+    st.sidebar.text("Model: Chronos-T5 (Small)")
+
+    load = get_gpu_load()
     st.sidebar.progress(load / 100)
-    st.sidebar.caption(f"Load: {load}% (AI Brain)")
+    st.sidebar.caption(f"Inference Load: {load}%")
 
     st.sidebar.divider()
 
-    # Unread News
-    unread = get_unread_news_count()
-    st.sidebar.markdown("### UNREAD INTEL")
-    st.sidebar.metric("Last 60m", unread, delta=None)
-
-    st.sidebar.divider()
-
-    # Target Focus (Symbol Selector)
-    st.sidebar.markdown("### TARGET FOCUS")
+    # Symbol Selector
     all_symbols = get_all_symbols()
+    selected_symbol = st.sidebar.selectbox("Select Asset", all_symbols)
 
-    # Scanner Data
-    scanner_df = get_trend_scanner()
-
-    # Default symbol logic
-    default_symbol = scanner_df.iloc[0]['symbol'] if not scanner_df.empty else (all_symbols[0] if all_symbols else None)
-
-    target_index = 0
-    if default_symbol and default_symbol in all_symbols:
-        target_index = all_symbols.index(default_symbol)
-
-    selected_symbol = st.sidebar.selectbox(
-        "Select Asset",
-        options=all_symbols,
-        index=target_index,
-        key="symbol_selector"
-    )
-
-    if st.sidebar.button("🔄 REFRESH SYSTEM"):
+    if st.sidebar.button("🔄 REFRESH"):
         st.rerun()
 
-    # --- Zone A: Scanner (Trend Surfer) ---
-    st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
-    st.markdown("#### 🌊 TREND SURFER SCANNER (Price > SMA 200)")
+    # --- Top Row: Ticker Tape ---
+    st.markdown("#### 🌊 MARKET VELOCITY (Top 5 Volume 5m)")
+    ticker_df = get_ticker_tape_data()
 
-    if not scanner_df.empty:
-        # Create HTML for ticker tape
+    if not ticker_df.empty:
         ticker_html_list = []
-        for row in scanner_df.itertuples():
-            pct_change = getattr(row, 'pct_dist', 0)
-            color_class = "ticker-up" if pct_change >= 0 else "ticker-down"
-            # arrow = "▲" if pct_change >= 0 else "▼" # Not used in HTML currently
+        for row in ticker_df.itertuples():
+            pct = getattr(row, 'pct_change', 0)
+            color = "#00FF94" if pct >= 0 else "#FF3B30"
+            sign = "+" if pct >= 0 else ""
 
             card_html = f"""
                 <div class='ticker-card'>
                     <div class='ticker-symbol'>{row.symbol}</div>
                     <div class='ticker-price'>${row.close:.2f}</div>
-                    <div class='ticker-highlight'>+{pct_change:.2f}% > SMA</div>
+                    <div class='ticker-highlight' style='color: {color};'>{sign}{pct:.2f}%</div>
                 </div>
             """
             ticker_html_list.append(card_html)
 
-        # Join list into a single string and wrap in container
-        ticker_html_content = "".join(ticker_html_list)
-        final_html = f"<div class='ticker-container'>{ticker_html_content}</div>"
-
-        st.markdown(final_html, unsafe_allow_html=True)
+        st.markdown(f"<div class='ticker-container'>{''.join(ticker_html_list)}</div>", unsafe_allow_html=True)
     else:
-        st.info("No healthy trends detected. Market might be Bearish.")
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.info("Waiting for market data...")
 
-    # --- Zone B: Main View (Chart & Technicals) ---
-    col_chart, col_ai = st.columns([3, 1])
+    # --- Main Grid ---
+    col_radar, col_chart = st.columns([2, 3])
 
-    if selected_symbol:
-        df_candles = get_recent_candles(selected_symbol)
-        df_tech = get_technicals(selected_symbol)
-        df_trades = get_symbol_trades(selected_symbol)
+    # Zone 1: Prediction Radar
+    with col_radar:
+        st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
+        st.subheader("🔮 PREDICTION RADAR (Chronos)")
 
-        if not df_candles.empty:
-            # Create Plotly Subplot
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.05,
-                row_heights=[0.7, 0.3],
-                specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+        radar_df = get_prediction_radar()
+        if not radar_df.empty:
+            # Highlight logic
+            def highlight_row(row):
+                if row['predicted_pct_change'] > 0.5:
+                    return ['background-color: rgba(0, 255, 148, 0.2)'] * len(row)
+                return [''] * len(row)
+
+            st.dataframe(
+                radar_df.style.apply(highlight_row, axis=1).format({
+                    "current_price": "${:.2f}",
+                    "predicted_price": "${:.2f}",
+                    "predicted_pct_change": "{:+.2f}%",
+                    "rsi_14": "{:.1f}"
+                }),
+                use_container_width=True,
+                height=500,
+                hide_index=True
             )
+        else:
+            st.info("No predictions yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            # Fixed Colors (Neon) - Gap-less Dynamics
-            inc_color = '#00FF94'
-            dec_color = '#FF3B30'
+    # Zone 2: Chart
+    with col_chart:
+        if selected_symbol:
+            chart_df = get_chart_data(selected_symbol)
+            if not chart_df.empty:
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
 
-            # Candlestick
-            fig.add_trace(go.Candlestick(
-                x=df_candles['timestamp'],
-                open=df_candles['open'],
-                high=df_candles['high'],
-                low=df_candles['low'],
-                close=df_candles['close'],
-                name='OHLC',
-                increasing_line_color=inc_color,
-                decreasing_line_color=dec_color
-            ), row=1, col=1)
+                # Candles
+                fig.add_trace(go.Candlestick(
+                    x=chart_df['timestamp'],
+                    open=chart_df['open'],
+                    high=chart_df['high'],
+                    low=chart_df['low'],
+                    close=chart_df['close'],
+                    name='OHLC',
+                    increasing_line_color='#00FF94',
+                    decreasing_line_color='#FF3B30'
+                ), row=1, col=1)
 
-            # Overlay Executed Trades
-            if not df_trades.empty:
-                buys = df_trades[df_trades['side'] == 'buy']
-                sells = df_trades[df_trades['side'] == 'sell']
-
-                if not buys.empty:
-                    fig.add_trace(go.Scatter(
-                        x=buys['timestamp'],
-                        y=buys['price'],
-                        mode='markers',
-                        name='Buy',
-                        marker=dict(symbol='triangle-up', size=12, color='#00FF94', line=dict(width=1, color='white'))
-                    ), row=1, col=1)
-
-                if not sells.empty:
-                    fig.add_trace(go.Scatter(
-                        x=sells['timestamp'],
-                        y=sells['price'],
-                        mode='markers',
-                        name='Sell',
-                        marker=dict(symbol='triangle-down', size=12, color='#FF3B30', line=dict(width=1, color='white'))
-                    ), row=1, col=1)
-
-            # RSI
-            if not df_tech.empty:
+                # SMA 200 (Gold)
                 fig.add_trace(go.Scatter(
-                    x=df_tech['timestamp'],
-                    y=df_tech['rsi_14'],
+                    x=chart_df['timestamp'],
+                    y=chart_df['sma_200'],
+                    mode='lines',
+                    name='SMA 200',
+                    line=dict(color='#FFD700', width=2)
+                ), row=1, col=1)
+
+                # RSI
+                fig.add_trace(go.Scatter(
+                    x=chart_df['timestamp'],
+                    y=chart_df['rsi_14'],
                     mode='lines',
                     name='RSI',
                     line=dict(color='#00d4ff', width=1)
@@ -358,109 +297,50 @@ def main():
                 fig.add_hline(y=70, line_dash="dot", line_color="#FF3B30", row=2, col=1)
                 fig.add_hline(y=30, line_dash="dot", line_color="#00FF94", row=2, col=1)
 
-            # Styling
-            fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=10, r=10, t=10, b=10),
-                height=600,
-                showlegend=False,
-                xaxis_rangeslider_visible=False
-            )
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    height=600,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    showlegend=False,
+                    xaxis_rangeslider_visible=False
+                )
 
-            # Grid Polish & Axis Format
-            fig.update_xaxes(
-                showgrid=True,
-                gridcolor='#1E222D',
-                gridwidth=1,
-                tickformat="%H:%M",
-                rangeslider_visible=False,
-                rangebreaks=[
-                    dict(bounds=["sat", "mon"]),   # Hide weekends only
-                ]
-            )
-            fig.update_yaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
-
-            # No Market Closed Annotation
-
-            st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning(f"No data for {selected_symbol}")
         else:
-            st.info("Select a symbol.")
+            st.info("Select a symbol to view chart.")
 
-    # --- Split Bottom Section ---
-    col_news, col_ledger = st.columns([1, 1])
+    # --- Bottom: Ledger ---
+    st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
+    st.subheader("📒 LEDGER & SIGNALS")
 
-    # --- Zone C: Intelligence Feed ---
-    with col_news:
-        st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
-        st.subheader("📡 INTELLIGENCE FEED")
+    col_sig, col_exec = st.columns(2)
 
-        news_df = get_raw_news()
-        if not news_df.empty:
-            # Scrollable container using height
-            with st.container(height=400):
-                for row in news_df.itertuples():
-                    urgency = getattr(row, 'urgency', 0)
-                    urgency_class = "urgent-news" if urgency > 7 else ""
+    with col_sig:
+        st.caption("Active Signals")
+        sig_df = get_pending_signals()
+        st.dataframe(sig_df, use_container_width=True, height=300, hide_index=True)
 
-                    # Sentiment Color Logic
-                    score = getattr(row, 'sentiment_score', 0)
-                    if score > 0:
-                        sentiment_color = "#00FF94" # Green
-                    elif score < 0:
-                        sentiment_color = "#FF3B30" # Red
-                    else:
-                        sentiment_color = "#AAAAAA" # Grey
-
-                    st.markdown(f"""
-                        <div class='news-card {urgency_class}' style='border-left-color: {sentiment_color};'>
-                            <div class='news-headline'>{row.headline}</div>
-                            <div class='news-meta'>
-                                <span>{row.symbol} | {row.timestamp}</span>
-                                <span class='badge-sentiment' style='background: {sentiment_color}20; color: {sentiment_color};'>
-                                    Score: {score:.2f}
-                                </span>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-        else:
-            st.info("No intelligence data captured.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # --- Zone D: The Ledger ---
-    with col_ledger:
-        st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
-        st.subheader("📒 EXECUTED TRADES")
-
-        trades_df = get_executed_trades()
-        if not trades_df.empty:
-            
+    with col_exec:
+        st.caption("Executed Trades")
+        exec_df = get_recent_trades()
+        if not exec_df.empty:
             def color_side(val):
-                if isinstance(val, str):
-                    if val.lower() == 'buy':
-                        return 'background-color: #00FF94; color: white; border-radius: 10px; padding: 2px 8px; font-weight: bold;'
-                    else:
-                        return 'background-color: #FF3B30; color: white; border-radius: 10px; padding: 2px 8px; font-weight: bold;'
-                return ''
-
-            styled_df = trades_df.style.map(color_side, subset=['side'])
+                return 'color: #00FF94' if val == 'buy' else 'color: #FF3B30'
 
             st.dataframe(
-                styled_df,
+                exec_df.style.map(color_side, subset=['side']).format({
+                    "price": "${:.2f}",
+                    "qty": "{:.0f}"
+                }),
                 use_container_width=True,
-                height=400,
-                hide_index=True,
-                column_config={
-                    "price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                    "qty": st.column_config.NumberColumn("Size"),
-                    "side": st.column_config.TextColumn("Side"),
-                    "timestamp": st.column_config.DatetimeColumn("Time", format="%m-%d %H:%M")
-                }
+                height=300,
+                hide_index=True
             )
-        else:
-            st.info("Ledger empty. No executions recorded.")
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

@@ -2,54 +2,31 @@ import sqlite3
 import os
 import math
 import sys
+import time
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
+from shared.smart_sleep import get_sleep_seconds
 
 # Configuration
 ACCOUNT_SIZE = 100000
-RISK_PCT = 0.01          # Risk 1% of account per trade ($1,000)
-STOP_LOSS_PCT = 0.025    # Stop Loss 2.5% below entry (Trailing Stop)
-MAX_POSITION_SIZE_PCT = 0.20 # Cap max position size to 20% of account ($20,000) to prevent over-leveraging on tight stops
+POSITION_SIZE_PCT = 0.01 # 1% of Account Equity per trade
 
 def calculate_position_size(close_price):
     """
-    Calculates the position size (number of shares) and stop loss price.
-
-    Logic:
-    - Risk Amount = Account Size * Risk % ($1,000)
-    - Stop Loss Distance = Close Price * Stop Loss %
-    - Shares = floor(Risk Amount / Stop Loss Distance) -> Integer shares
-    - Stop Loss Price = Close Price - Stop Loss Distance
-    - Applies MAX_POSITION_SIZE_PCT cap.
-
-    Returns:
-        (size, stop_loss_price)
+    Calculates the position size (number of shares).
+    Logic: Position Value = Account Size * 1%
     """
     if close_price <= 0:
-        return 0, 0.0
+        return 0
 
-    risk_amount = ACCOUNT_SIZE * RISK_PCT
-    stop_loss_distance = close_price * STOP_LOSS_PCT
+    target_position_value = ACCOUNT_SIZE * POSITION_SIZE_PCT
 
-    # Avoid division by zero
-    if stop_loss_distance == 0:
-        return 0, 0.0
+    # Calculate shares
+    shares = math.floor(target_position_value / close_price)
 
-    # limit risk-based sizing
-    shares = math.floor(risk_amount / stop_loss_distance)
-
-    # Cap position size based on max allocation
-    max_shares_allocation = math.floor((ACCOUNT_SIZE * MAX_POSITION_SIZE_PCT) / close_price)
-
-    if shares > max_shares_allocation:
-        print(f"⚠️ Capping position size from {shares} to {max_shares_allocation} (Max Allocation Rule)")
-        shares = max_shares_allocation
-
-    stop_loss_price = close_price - stop_loss_distance
-
-    return shares, stop_loss_price
+    return shares
 
 def run_risk_manager():
     print("Starting Risk Manager...")
@@ -60,12 +37,14 @@ def run_risk_manager():
 
     try:
         # Find PENDING BUY signals and their corresponding close price
-        # Using an INNER JOIN to only process signals with valid market data
+        # We need the close price from market_data (most recent 5m candle)
+        # JOIN with market_data based on symbol and timestamp
         query = """
             SELECT ts.id, ts.symbol, ts.timestamp, md.close
             FROM trade_signals ts
             JOIN market_data md ON ts.symbol = md.symbol AND ts.timestamp = md.timestamp
             WHERE ts.status = 'PENDING' AND ts.signal_type = 'BUY'
+            AND md.timeframe = '5m'
         """
 
         cursor.execute(query)
@@ -80,24 +59,25 @@ def run_risk_manager():
             close_price = signal['close']
 
             if close_price is None:
-                print(f"Skipping signal {signal_id} for {symbol} at {timestamp}: No market data found.")
+                print(f"Skipping signal {signal_id} for {symbol}: No market data found.")
                 continue
 
-            size, stop_loss = calculate_position_size(close_price)
+            size = calculate_position_size(close_price)
 
             if size > 0:
+                # Update signal with size
+                # We don't set stop_loss price here because Alpaca handles Trailing Stop %
+                # But we can store it for reference if we wanted, but the prompt says just SIZED.
                 update_query = """
                     UPDATE trade_signals
-                    SET size = ?, stop_loss = ?, status = 'SIZED'
+                    SET size = ?, status = 'SIZED'
                     WHERE id = ?
                 """
-                cursor.execute(update_query, (size, stop_loss, signal_id))
-                print(f"✅ Processed signal {signal_id}: Symbol={symbol}, Price={close_price}, Size={size}, StopLoss={stop_loss:.4f}")
+                cursor.execute(update_query, (size, signal_id))
+                conn.commit() # Commit immediately
+                print(f"✅ Sized signal {signal_id}: Symbol={symbol}, Price={close_price:.2f}, Size={size} shares.")
             else:
                  print(f"Skipping signal {signal_id}: Calculated size is 0 (Price: {close_price}).")
-
-        conn.commit()
-        print("Risk Manager completed successfully.")
 
     except sqlite3.Error as e:
         print(f"Database error: {e}")
@@ -105,4 +85,9 @@ def run_risk_manager():
         conn.close()
 
 if __name__ == "__main__":
-    run_risk_manager()
+    while True:
+        run_risk_manager()
+
+        sleep_sec = get_sleep_seconds()
+        print(f"💤 Risk Manager Sleeping for {sleep_sec} seconds...")
+        time.sleep(sleep_sec)
