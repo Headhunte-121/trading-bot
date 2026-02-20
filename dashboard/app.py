@@ -227,6 +227,7 @@ def main():
             padding: 8px 12px;
             min-width: 140px;
             text-align: center;
+            flex-shrink: 0; /* Prevent shrinking */
         }
 
         .ticker-symbol { font-weight: bold; font-size: 1.1em; color: #FFFFFF; }
@@ -373,7 +374,7 @@ def main():
         index=target_index,
         key="symbol_selector"
     )
-    
+
     if st.sidebar.button("🔄 REFRESH SYSTEM"):
         st.rerun()
 
@@ -383,19 +384,24 @@ def main():
 
     if not movers.empty:
         # Create HTML for ticker tape
-        ticker_html = "<div class='ticker-container'>"
+        ticker_html_list = []
         for row in movers.itertuples():
             color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
             arrow = "▲" if row.pct_change >= 0 else "▼"
-            ticker_html += f"""
+            card_html = f"""
                 <div class='ticker-card'>
                     <div class='ticker-symbol'>{row.symbol}</div>
                     <div class='ticker-price'>${row.current_price:.2f}</div>
                     <div class='{color_class}'>{arrow} {row.pct_change:.2f}%</div>
                 </div>
             """
-        ticker_html += "</div>"
-        st.markdown(ticker_html, unsafe_allow_html=True)
+            ticker_html_list.append(card_html)
+
+        # Join list into a single string and wrap in container
+        ticker_html_content = "".join(ticker_html_list)
+        final_html = f"<div class='ticker-container'>{ticker_html_content}</div>"
+
+        st.markdown(final_html, unsafe_allow_html=True)
     else:
         st.info("Awaiting Market Data...")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -407,7 +413,7 @@ def main():
         df_candles = get_recent_candles(selected_symbol)
         df_tech = get_technicals(selected_symbol)
         df_trades = get_symbol_trades(selected_symbol)
-        
+
         if not df_candles.empty:
             # Create Plotly Subplot
             fig = make_subplots(
@@ -418,6 +424,16 @@ def main():
                 specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
             )
 
+            # Determine colors based on market status
+            is_market_open = market_status['is_open']
+
+            if is_market_open:
+                inc_color = '#00FF94'
+                dec_color = '#FF3B30'
+            else:
+                inc_color = '#555555' # Grayscale for closed
+                dec_color = '#333333'
+
             # Candlestick
             fig.add_trace(go.Candlestick(
                 x=df_candles['timestamp'],
@@ -426,8 +442,8 @@ def main():
                 low=df_candles['low'],
                 close=df_candles['close'],
                 name='OHLC',
-                increasing_line_color='#00FF94',
-                decreasing_line_color='#FF3B30'
+                increasing_line_color=inc_color,
+                decreasing_line_color=dec_color
             ), row=1, col=1)
 
             # Overlay Executed Trades
@@ -478,8 +494,22 @@ def main():
                 xaxis_rangeslider_visible=False
             )
 
-            # Remove range slider from candlestick
+            # Grid Polish
+            fig.update_xaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
+            fig.update_yaxes(showgrid=True, gridcolor='#1E222D', gridwidth=1)
+
+            # Remove range slider explicitly
             fig.update_xaxes(rangeslider_visible=False)
+
+            # Market Closed Annotation
+            if not is_market_open:
+                fig.add_annotation(
+                    text="MARKET CLOSED",
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5,
+                    showarrow=False,
+                    font=dict(size=40, color="rgba(255, 255, 255, 0.1)")
+                )
 
             st.plotly_chart(fig, use_container_width=True)
         else:
