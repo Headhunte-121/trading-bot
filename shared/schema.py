@@ -96,6 +96,17 @@ def setup_database():
         )
     """)
 
+    # --- SYSTEM LOGS ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS system_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            log_level TEXT NOT NULL,
+            message TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("Database setup complete.")

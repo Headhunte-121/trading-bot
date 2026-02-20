@@ -39,3 +39,30 @@ def get_db_connection(db_path=None, timeout=60.0):
         pass
 
     return conn
+
+def log_system_event(service_name, log_level, message):
+    """
+    Logs a system event to the database.
+
+    Args:
+        service_name (str): Name of the service (e.g., "MarketHarvester").
+        log_level (str): Level of the log (e.g., "INFO", "ERROR").
+        message (str): The message content.
+    """
+    import datetime
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        cursor.execute("""
+            INSERT INTO system_logs (timestamp, service_name, log_level, message)
+            VALUES (?, ?, ?, ?)
+        """, (timestamp, service_name, log_level, message))
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Failed to log system event: {e}")

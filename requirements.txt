@@ -24,6 +24,8 @@ urllib3<2,>=1.26.0
 streamlit
 matplotlib  # Required for pandas style.background_gradient
 plotly
+streamlit-aggrid
+streamlit-autorefresh
 
 # Environment
 python-dotenv
