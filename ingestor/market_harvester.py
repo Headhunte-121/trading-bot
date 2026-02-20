@@ -26,60 +26,41 @@ def get_last_timestamp(cursor, symbol, timeframe):
     except Exception:
         return None
 
-def fetch_and_store(symbol, timeframe, period, interval):
+def fetch_and_store(symbol, timeframe, period, interval, limit=None):
     """
     Fetches market data for a symbol and timeframe, handling redundancy.
+    limit: Optional integer to keep only the last N rows before insertion.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
         last_ts = get_last_timestamp(cursor, symbol, timeframe)
 
         # Determine fetch strategy
-        fetch_period = period
+        df = pd.DataFrame()
+
         if last_ts:
             # Parse timestamp to check if we need to fetch
             last_dt = datetime.datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-            now_dt = datetime.datetime.now(datetime.timezone.utc)
-            
-            delta = now_dt - last_dt
-            
-            # If 5m data is older than 5 mins, fetch. If 1d data is older than 1 day, fetch.
-            # But yfinance 'period' is not precise enough for "missing candles only" easily without start/end.
-            # However, yfinance handles 'start' parameter.
-            # Let's use 'start' if we have a last timestamp.
-            
-            # buffer: start from last_ts to ensure we get the latest (overlaps are handled by INSERT OR IGNORE)
             start_date = last_dt.strftime('%Y-%m-%d')
-            
-            # yfinance download with start date is often cleaner for "update"
-            # BUT yf.Ticker.history with start/end is also good.
-            # Let's stick to period if the gap is huge, or use start if gap is small.
-            # Actually, the user requirement says: "If a timestamp exists, calculate the delta to now. Only fetch the specific days/hours missing."
-            
-            # If delta is small (e.g. < 1 day for 5m), we might just fetch '1d' period to be safe and fast.
-            # If delta is large, use start/end.
 
-            # Simplification: Always use 'start' if last_ts exists.
-            # However, yfinance requires 'start' to be YYYY-MM-DD.
-            # If we pass start=today, we get today's data.
-
-            # Let's try to use the 'start' parameter.
-            # Note: yfinance `history` method accepts `start` as string or datetime.
-
+            # Use 'start' parameter for updates
+            # yfinance history with start date fetches from 00:00 of that date
             print(f"🔄 Updating {symbol} ({timeframe}). Last: {last_ts}...")
-            # We add 1 second to avoid fetching the exact same last candle if possible,
-            # but yfinance resolution is minute/day.
-            # Overlap is fine due to INSERT OR IGNORE.
             df = yf.Ticker(symbol).history(start=start_date, interval=interval)
         else:
+            # Full fetch if no history
             print(f"📜 Initial Fetch {symbol} ({timeframe})...")
             df = yf.Ticker(symbol).history(period=period, interval=interval)
 
         if df.empty:
             print(f"⚠️ No data returned for {symbol} ({timeframe}). Market holiday or halt?")
             return
+
+        # Optional: Limit rows (e.g. strict intraday update)
+        if limit and len(df) > limit:
+            df = df.tail(limit)
 
         # Prepare for DB
         rows_to_insert = []
@@ -120,27 +101,41 @@ def fetch_and_store(symbol, timeframe, period, interval):
     finally:
         conn.close()
 
+def initial_sync():
+    """
+    Runs once at startup to fetch 1 year of 1d data and ensure SMA 200 data is available.
+    """
+    print("🚀 Starting Initial Sync (Daily Data for SMA 200)...")
+    for symbol in SYMBOLS:
+        # Fetch 2 years of daily data to be safe for SMA 200 calculation
+        fetch_and_store(symbol, "1d", "2y", "1d")
+        time.sleep(0.2)
+    print("✅ Initial Sync Complete.")
+
+def intraday_sync():
+    """
+    Runs every 5 minutes to fetch recent 5m data.
+    """
+    print("🔄 Running Intraday Sync (5m)...")
+    for symbol in SYMBOLS:
+        # Fetch 1 day of 5m data (covers today's market hours).
+        # We limit to last 5 candles if updating, just to be lean as requested,
+        # but sticking to period="1d" is safest network-wise.
+        # However, passing limit=5 respects the "fetch only last 3-5 candles" directive
+        # for processing/insertion, even if yfinance fetches the day.
+        fetch_and_store(symbol, "5m", "1d", "5m", limit=5)
+        time.sleep(0.2)
+    print("✅ Intraday Sync Cycle Complete.")
+
 def main():
-    print("🚀 Starting Smart Market Harvester...")
+    print("🚀 Starting Smart Market Harvester (Dual-Mode)...")
     
+    # 1. Initial Sync (One-time)
+    initial_sync()
+
+    # 2. Intraday Loop
     while True:
-        # Loop through symbols
-        print(f"\n🔄 Cycle Start: Processing {len(SYMBOLS)} symbols...")
-
-        for symbol in SYMBOLS:
-            # 1. Fetch Daily (1d) - Period '1y' for history or 'start' for update
-            fetch_and_store(symbol, "1d", "1y", "1d")
-
-            # Anti-Ban Sleep
-            time.sleep(0.2)
-
-            # 2. Fetch Intraday (5m) - Period '5d' for history or 'start' for update
-            fetch_and_store(symbol, "5m", "5d", "5m")
-
-            # Anti-Ban Sleep
-            time.sleep(0.2)
-
-        print("✅ Cycle Complete.")
+        intraday_sync()
 
         # Smart Sleep
         sleep_sec = get_sleep_seconds()
