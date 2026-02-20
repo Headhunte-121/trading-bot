@@ -22,20 +22,8 @@ def setup_database():
         print(f"Dropped legacy table: {table}")
 
     # --- MARKET DATA ---
-    # Modified to support dual-timeframes
-    # Primary Key: (symbol, timestamp, timeframe)
-    # If the table exists but has the old schema, we drop it to re-initialize correctly.
-    # Check if 'timeframe' column exists
-    cursor.execute("PRAGMA table_info(market_data)")
-    columns = [info[1] for info in cursor.fetchall()]
-    if 'timeframe' not in columns and 'market_data' in tables_to_drop:
-        # Logic above handles explicit drops, but for market_data we might need to be more aggressive if we want to enforce the new PK
-        pass
-
-    # Actually, let's just DROP market_data to ensure clean state for the new PK structure
-    # The harvester will refill it.
-    cursor.execute("DROP TABLE IF EXISTS market_data")
-
+    # Check for new schema or recreate
+    # We will assume a fresh start or simple existence check
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_data (
             symbol TEXT NOT NULL,
@@ -51,11 +39,6 @@ def setup_database():
     """)
 
     # --- TECHNICAL INDICATORS ---
-    # Added sma_200 and sma_50
-    # Primary Key: (symbol, timestamp)
-    # We will drop and recreate to ensure schema compliance
-    cursor.execute("DROP TABLE IF EXISTS technical_indicators")
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS technical_indicators (
             symbol TEXT NOT NULL,
@@ -68,22 +51,26 @@ def setup_database():
         )
     """)
 
-    # --- AI PREDICTIONS ---
-    # New Table
+    # --- AI PREDICTIONS (Updated for Dual-Model Ensemble) ---
+    # We drop the old table to ensure schema update
+    cursor.execute("DROP TABLE IF EXISTS ai_predictions")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             current_price REAL,
-            predicted_price REAL,
-            predicted_pct_change REAL,
+            small_predicted_price REAL,
+            large_predicted_price REAL,
+            ensemble_predicted_price REAL,
+            ensemble_pct_change REAL,
             UNIQUE(symbol, timestamp)
         )
     """)
+    print("Created ai_predictions table with Ensemble support.")
 
     # --- TRADE SIGNALS ---
-    # Kept largely the same, ensuring order_id exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trade_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

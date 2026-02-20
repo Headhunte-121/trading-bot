@@ -11,25 +11,24 @@ from shared.smart_sleep import get_sleep_seconds
 
 def run_strategy():
     """
-    Executes the Trend Following Strategy.
+    Executes the Dual-Model Ensemble Strategy.
     Conditions:
     1. Trend: Close > SMA 200
     2. Pullback: 35 < RSI < 55
-    3. AI: Predicted % Change > 0.5%
+    3. AI: Ensemble Predicted % Change > 0.5%
     """
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
-        print("Running Trend Following Strategy...")
+        print("Running Ensemble Strategy...")
 
         # Lookback window (e.g. last 60 minutes of candles)
-        # We process recent candles to ensure we don't miss signals if the loop is slow
         lookback_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=60)
         lookback_iso = lookback_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        # Complex Join Query
+        # Updated Query for Ensemble Table
         query = """
             SELECT
                 m.symbol,
@@ -37,7 +36,9 @@ def run_strategy():
                 m.close,
                 t.sma_200,
                 t.rsi_14,
-                p.predicted_pct_change
+                p.ensemble_pct_change,
+                p.small_predicted_price,
+                p.large_predicted_price
             FROM market_data m
             JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
             JOIN ai_predictions p ON m.symbol = p.symbol AND m.timestamp = p.timestamp
@@ -47,7 +48,7 @@ def run_strategy():
                 AND m.close > t.sma_200
                 AND t.rsi_14 > 35
                 AND t.rsi_14 < 55
-                AND p.predicted_pct_change > 0.5
+                AND p.ensemble_pct_change > 0.5
             ORDER BY m.timestamp DESC
         """
 
@@ -66,7 +67,7 @@ def run_strategy():
             close = row['close']
             sma_200 = row['sma_200']
             rsi = row['rsi_14']
-            pct_change = row['predicted_pct_change']
+            pct_change = row['ensemble_pct_change']
 
             # Check for duplicate signal
             cursor.execute(
@@ -77,7 +78,7 @@ def run_strategy():
                 continue # Already signaled
 
             # Generate Signal
-            print(f"⭐⭐ BUY SIGNAL: {symbol} @ {timestamp} | Close: {close:.2f} > SMA: {sma_200:.2f} | RSI: {rsi:.2f} | AI: +{pct_change:.2f}% ⭐⭐")
+            print(f"⭐⭐ BUY SIGNAL: {symbol} @ {timestamp} | Close: {close:.2f} > SMA: {sma_200:.2f} | RSI: {rsi:.2f} | Ensemble AI: +{pct_change:.2f}% ⭐⭐")
 
             cursor.execute("""
                 INSERT INTO trade_signals
