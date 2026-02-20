@@ -59,35 +59,53 @@ def load_llm():
     return text_generator
     
 def analyze_headline(headline, symbol, llm_pipeline):
+    # This prompt forces the model to "think" before it scores.
+    # It explicitly forbids "Guilt by Association" (e.g. Samsung news != Apple news).
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-    You are a conservative Wall Street Analyst. 
-    Task 1: Is this headline directly relevant to {symbol}?
-    Task 2: Sentiment score from -1.0 to 1.0. 
-    
-    SCORING RUBRIC:
-    - 0.1 to 0.3: Minor news, general updates, or slight positive/negative opinions.
-    - 0.4 to 0.7: Significant events (New products, Analyst upgrades, strong earnings).
-    - 0.8 to 1.0: Reserved ONLY for catastrophic or game-changing news.
-    - If it's a "Top 10 stocks to buy" list, give it a 0.1. Don't overreact.
+    You are an elite algorithmic trading system. Your job is to filter noise and score sentiment for the ticker: {symbol}.
 
-    Format:
+    STRICT FILTERING RULES:
+    1. SUBJECT CHECK: If the headline is about a competitor (e.g., Samsung, Google) but does not explicitly mention {symbol}, it is IRRELEVANT (Score 0).
+    2. ETF/MARKET CHECK: If the headline is about the "S&P 500", "Nasdaq", "Tech Sector", or "Magnificent 7" generally, it is IRRELEVANT (Score 0).
+    3. LIST CHECK: If {symbol} is just listed among many others (e.g., "Top 10 stocks to buy: NVDA, AAPL, MSFT..."), score it as NEUTRAL/WEAK (0.1).
+    4. DIRECT NEWS: Only score high (>0.5 or <-0.5) if the news is SPECIFIC to {symbol}'s business (Earnings, Product Launch, Lawsuit, Merger).
+
+    OUTPUT FORMAT:
+    You must respond in this exact format:
+    [REASONING] <1 short sentence explaining why>
+    [SCORE] <number between -1.0 and 1.0>
+
+    EXAMPLES:
+    Headline: "Samsung profits soar 50%" (Ticker: AAPL)
+    Response: [REASONING] News is about Samsung, not Apple. [SCORE] 0.0
+
+    Headline: "Tech stocks rally as Fed cuts rates" (Ticker: AAPL)
+    Response: [REASONING] General market news, not specific to Apple. [SCORE] 0.0
+
+    Headline: "Apple unveils new AI glasses" (Ticker: AAPL)
+    Response: [REASONING] New product launch is specific positive news. [SCORE] 0.8
+
     <|eot_id|><|start_header_id|>user<|end_header_id|>
     Headline: "{headline}"
     Ticker: {symbol}
     <|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
     try:
+        # Force the model to generate the reasoning first
         sequences = llm_pipeline(prompt, do_sample=False, temperature=None, top_p=None)
-        output = sequences
+        output = sequences[0]['generated_text']
         
-        response = output.split("<|start_header_id|>assistant<|end_header_id|>").strip()
+        # Parse the response
+        response = output.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
         
-        if "" in response.upper():
-            return 0.0 
-            
-        match = re.search(r"SCORE:\s?(-?\d+\.?\d*)", response, re.IGNORECASE)
+        # Debugging: Uncomment this to see the AI's "thoughts" in your terminal
+        # print(f"DEBUG AI: {response}")
+
+        # Extract Score using Regex
+        match = re.search(r"\[SCORE\]\s?(-?\d+\.?\d*)", response, re.IGNORECASE)
         if match:
             score = float(match.group(1))
+            # Clamp between -1 and 1
             return max(-1.0, min(1.0, score))
             
         return 0.0
