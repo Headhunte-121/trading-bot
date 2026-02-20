@@ -257,9 +257,10 @@ def render_ticker_tape():
             """
             items.append(html)
 
+        separator = '<div style="width: 20px;"></div>'
         full_html = f"""
             <div class="ticker-container">
-                {'<div style="width: 20px;"></div>'.join(items)}
+                {separator.join(items)}
             </div>
         """
         # Bug 2 Fix: unsafe_allow_html=True is mandatory here
