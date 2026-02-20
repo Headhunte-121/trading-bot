@@ -39,6 +39,7 @@ def load_llm():
     )
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    # Important for batch generation
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
 
@@ -54,7 +55,7 @@ def load_llm():
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        batch_size=16,
+        batch_size=8, # Reduced batch size to prevent OOM
         max_new_tokens=128,
         pad_token_id=tokenizer.eos_token_id
     )
@@ -119,7 +120,8 @@ def process_news_batch(conn, llm, cursor):
     Checks for un-scored headlines and processes them.
     Returns True if work was done (to prevent sleep), False otherwise.
     """
-    cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE relevance IS NULL LIMIT 16")
+    # Fetch batch of 8 (reduced from 16)
+    cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE relevance IS NULL LIMIT 8")
     rows = cursor.fetchall()
 
     if not rows:
@@ -128,24 +130,42 @@ def process_news_batch(conn, llm, cursor):
     print(f"📰 News Brain: Analyzing {len(rows)} headlines...")
     prompts = [build_news_prompt(row['headline'], row['symbol']) for row in rows]
 
-    # Run inference
-    results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+    results = []
+    try:
+        # Run inference
+        results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+    except Exception as e:
+        print(f"❌ News Inference Error: {e}")
+        results = [] # Default to empty
 
     updates = []
-    for row, res in zip(rows, results):
-        generated_text = res[0]['generated_text']
-        response_part = generated_text.split("assistant<|end_header_id|>")[-1]
-        data = parse_llm_output(response_part)
+    for idx, row in enumerate(rows):
+        generated_text = ""
+        data = None
+
+        if idx < len(results):
+            res = results[idx]
+            if isinstance(res, list) and len(res) > 0:
+                generated_text = res[0].get('generated_text', '')
+            elif isinstance(res, dict):
+                generated_text = res.get('generated_text', '')
+
+            response_part = generated_text.split("assistant<|end_header_id|>")[-1]
+            data = parse_llm_output(response_part)
+        else:
+             print(f"⚠️ Missing news result for {row['symbol']} (ID: {row['id']}). Defaulting to 0.0.")
 
         sentiment = 0.0
         relevance = 0.0
         urgency = 0
+        reasoning = "Analysis Failed"
 
         if data:
             try:
                 sentiment = float(data.get("sentiment", 0.0))
                 relevance = float(data.get("relevance", 0.0))
                 urgency = int(data.get("urgency", 0))
+                reasoning = data.get("reasoning", "")
 
                 # Clamp values
                 sentiment = max(-1.0, min(1.0, sentiment))
@@ -160,9 +180,12 @@ def process_news_batch(conn, llm, cursor):
     # Batch update
     if updates:
         query = "UPDATE raw_news SET sentiment_score = ?, relevance = ?, urgency = ? WHERE id = ?"
-        params = [(u[1], u[2], u[3], u[0]) for u in updates]
-        conn.executemany(query, params)
-        conn.commit()
+        try:
+            params = [(u[1], u[2], u[3], u[0]) for u in updates]
+            conn.executemany(query, params)
+            conn.commit()
+        except Exception as e:
+            print(f"❌ DB Update Error (News): {e}")
 
     return True
 
@@ -171,7 +194,8 @@ def process_chart_batch(conn, llm, cursor):
     Checks for pending chart analysis requests and processes them.
     Returns True if work was done.
     """
-    cursor.execute("SELECT id, symbol, technical_summary FROM chart_analysis_requests WHERE status = 'PENDING' LIMIT 16")
+    # Reduced batch size to 8
+    cursor.execute("SELECT id, symbol, technical_summary FROM chart_analysis_requests WHERE status = 'PENDING' LIMIT 8")
     rows = cursor.fetchall()
 
     if not rows:
@@ -180,18 +204,35 @@ def process_chart_batch(conn, llm, cursor):
     print(f"📈 Analyst Brain: Reviewing {len(rows)} charts...")
     prompts = [build_chart_prompt(row['technical_summary'], row['symbol']) for row in rows]
 
-    # Run inference
-    results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+    results = []
+    try:
+        # Run inference
+        results = llm(prompts, do_sample=True, temperature=0.3, top_p=0.9)
+    except Exception as e:
+        print(f"❌ Chart Inference Error: {e}")
+        results = []
 
     updates = []
-    for row, res in zip(rows, results):
-        generated_text = res[0]['generated_text']
-        response_part = generated_text.split("assistant<|end_header_id|>")[-1]
-        data = parse_llm_output(response_part)
+    # Iterate over rows carefully
+    for idx, row in enumerate(rows):
+        generated_text = ""
+        data = None
+
+        if idx < len(results):
+            res = results[idx]
+            if isinstance(res, list) and len(res) > 0:
+                generated_text = res[0].get('generated_text', '')
+            elif isinstance(res, dict):
+                generated_text = res.get('generated_text', '')
+
+            response_part = generated_text.split("assistant<|end_header_id|>")[-1]
+            data = parse_llm_output(response_part)
+        else:
+            print(f"⚠️ Missing chart result for {row['symbol']} (ID: {row['id']}). Marking failed.")
 
         prediction = "NEUTRAL"
         confidence = 0.0
-        reasoning = "Parsing error"
+        reasoning = "Parsing/Inference Error"
 
         if data:
             try:
@@ -201,6 +242,8 @@ def process_chart_batch(conn, llm, cursor):
             except (ValueError, TypeError):
                 pass
 
+        # We assume COMPLETED even on failure to avoid loops, unless we implement a RETRY status
+        # For now, mark completed with 0 confidence to prevent stalling
         updates.append((prediction, confidence, reasoning, row['id']))
         print(f"   --> {row['symbol']} Analyst: {prediction} ({confidence:.2f})")
 
@@ -211,8 +254,11 @@ def process_chart_batch(conn, llm, cursor):
             SET status = 'COMPLETED', ai_prediction = ?, ai_confidence = ?, ai_reasoning = ?
             WHERE id = ?
         """
-        conn.executemany(query, updates)
-        conn.commit()
+        try:
+            conn.executemany(query, updates)
+            conn.commit()
+        except Exception as e:
+            print(f"❌ DB Update Error (Charts): {e}")
 
     return True
 
@@ -220,7 +266,7 @@ def main():
     device = get_device()
     llm = load_llm()
 
-    print("✅ Unified AI Brain (Llama-3) is Active. Monitoring News & Charts...")
+    print("✅ Unified AI Brain (Llama-3) is Active. Monitoring for new news...")
 
     while True:
         conn = get_db_connection()
@@ -229,9 +275,10 @@ def main():
             continue
 
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
 
         try:
+            cursor = conn.cursor()
+
             # Priority 1: News (Safety Shield)
             did_news = process_news_batch(conn, llm, cursor)
 
@@ -242,8 +289,8 @@ def main():
 
             if not did_news and not did_charts:
                 # No work to do
-                print("💤 Brain idle. Sleeping 2s...", end='\r')
-                time.sleep(2)
+                print("💤 Brain idle. Sleeping 15 minutes...", end='\r')
+                time.sleep(900) # 15 minutes
             else:
                 # If we did work, loop immediately to drain queue
                 pass
