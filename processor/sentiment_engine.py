@@ -57,33 +57,32 @@ def load_llm():
     )
     
     return text_generator
-
+    
 def analyze_headline(headline, symbol, llm_pipeline):
-  prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
     You are a conservative Wall Street Analyst. 
-    Task 1: Is this headline directly relevant to {symbol}? [YES/NO]
+    Task 1: Is this headline directly relevant to {symbol}?
     Task 2: Sentiment score from -1.0 to 1.0. 
     
     SCORING RUBRIC:
     - 0.1 to 0.3: Minor news, general updates, or slight positive/negative opinions.
     - 0.4 to 0.7: Significant events (New products, Analyst upgrades, strong earnings).
-    - 0.8 to 1.0: Reserved ONLY for catastrophic or game-changing news (Bankruptcy, Acquisition, 20% earnings beat/miss).
+    - 0.8 to 1.0: Reserved ONLY for catastrophic or game-changing news.
     - If it's a "Top 10 stocks to buy" list, give it a 0.1. Don't overreact.
 
-    Format: [RELEVANT: YES/NO] [SCORE: <number>]
+    Format:
     <|eot_id|><|start_header_id|>user<|end_header_id|>
     Headline: "{headline}"
     Ticker: {symbol}
     <|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
     try:
-        # FIX: explicitly setting do_sample=False inside the call stops the generation_config spam
         sequences = llm_pipeline(prompt, do_sample=False, temperature=None, top_p=None)
-        output = sequences[0]['generated_text']
+        output = sequences
         
-        response = output.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+        response = output.split("<|start_header_id|>assistant<|end_header_id|>").strip()
         
-        if "[RELEVANT: NO]" in response.upper():
+        if "" in response.upper():
             return 0.0 
             
         match = re.search(r"SCORE:\s?(-?\d+\.?\d*)", response, re.IGNORECASE)
@@ -95,7 +94,7 @@ def analyze_headline(headline, symbol, llm_pipeline):
 
     except Exception:
         return 0.0
-
+        
 def update_sentiment_score(conn, row_id, score):
     query = "UPDATE raw_news SET sentiment_score = ? WHERE id = ?"
     try:
