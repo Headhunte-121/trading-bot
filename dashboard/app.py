@@ -53,16 +53,19 @@ def main():
     except:
         st.warning("Waiting for data to populate...")
 
-    # --- MIDDLE ROW: Sentiment Chart ---
+   # --- MIDDLE ROW: Sentiment Chart (CLEANED VERSION) ---
     st.divider()
-    st.subheader("🧠 Swarm Intelligence (News Sentiment)")
+    st.subheader("🧠 Swarm Intelligence (Smoothed Sentiment)")
     
-    news_query = "SELECT symbol, timestamp, sentiment_score FROM raw_news WHERE sentiment_score IS NOT NULL"
-    news_df = get_data(news_query)
+    news_df = get_data("SELECT symbol, timestamp, sentiment_score FROM raw_news WHERE sentiment_score IS NOT NULL")
 
     if not news_df.empty:
         news_df['timestamp'] = pd.to_datetime(news_df['timestamp'])
-        chart_data = news_df.pivot_table(index='timestamp', columns='symbol', values='sentiment_score', aggfunc='mean').ffill()
+        
+        # RESAMPLING: This is the secret to a clean chart. 
+        # It calculates the average sentiment every 30 minutes.
+        chart_data = news_df.set_index('timestamp').groupby('symbol')['sentiment_score'].resample('30T').mean().unstack(level=0).ffill()
+        
         if selected_symbol != "ALL":
             st.line_chart(chart_data[selected_symbol])
         else:
