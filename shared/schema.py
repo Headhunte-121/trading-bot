@@ -122,6 +122,17 @@ def setup_database():
         )
     """)
 
+    # --- SYSTEM CONFIG ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS system_config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    # Initialize default configuration
+    cursor.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('sleep_mode', 'AUTO')")
+    print("System config table created and initialized.")
+
     conn.commit()
     conn.close()
     print("Database setup complete.")

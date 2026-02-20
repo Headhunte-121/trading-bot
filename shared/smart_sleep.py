@@ -1,6 +1,7 @@
 import time
 import sys
 import os
+import sqlite3
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
@@ -10,7 +11,7 @@ except ImportError:
 
 # Ensure shared package is available if run directly
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.db_utils import log_system_event
+from shared.db_utils import log_system_event, get_db_connection
 
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
@@ -20,6 +21,29 @@ MARKET_CLOSE_MINUTE = 0  # 16:00:00 exactly
 SLEEP_ACTIVE = 300
 SLEEP_PASSIVE = 3600
 
+def get_config_value(key, default):
+    """
+    Retrieves a configuration value from the database with a short timeout.
+    """
+    conn = None
+    try:
+        conn = get_db_connection(timeout=1.0) # Short timeout
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        return default
+    except sqlite3.OperationalError:
+        # Database locked or busy
+        return default
+    except Exception as e:
+        print(f"Error reading config: {e}")
+        return default
+    finally:
+        if conn:
+            conn.close()
+
 def get_market_status():
     """
     Returns a dictionary with status details:
@@ -28,6 +52,22 @@ def get_market_status():
     - 'sleep_seconds': int
     """
     try:
+        # Check System Config Override
+        sleep_mode = get_config_value("sleep_mode", "AUTO")
+
+        if sleep_mode == "FORCE_AWAKE":
+            return {
+                'is_open': True,
+                'status_message': "⚡ Force Awake - Active Mode (5m)",
+                'sleep_seconds': SLEEP_ACTIVE
+            }
+        elif sleep_mode == "FORCE_SLEEP":
+             return {
+                'is_open': False,
+                'status_message': "🌙 Force Sleep - Sleep Mode (1h)",
+                'sleep_seconds': SLEEP_PASSIVE
+            }
+
         # Get current time in New York
         ny_time = datetime.now(ZoneInfo("America/New_York"))
 
