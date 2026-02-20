@@ -3,7 +3,7 @@ import time
 import sqlite3
 import datetime
 import sys
-from alpaca_trade_api.rest import REST, TimeFrame
+from alpaca_trade_api.rest import REST
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +17,7 @@ def process_signals():
     api_secret = os.getenv("APCA_API_SECRET_KEY")
     base_url = os.getenv("APCA_API_BASE_URL")
 
+    # Fix: Ensure all keys exist
     if not all([api_key, api_secret, base_url]):
         print("Error: Alpaca environment variables not set.")
         return
@@ -28,7 +29,7 @@ def process_signals():
         return
 
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row # CRITICAL: This makes results behave like dictionaries
     cursor = conn.cursor()
 
     try:
@@ -40,12 +41,13 @@ def process_signals():
             print(f"Found {len(signals)} signals to process.")
 
         for signal in signals:
-            signal_id = signal
-            symbol = signal
-            qty = signal
+            # FIX: Access columns by name using the Row factory
+            signal_id = signal['id']
+            symbol = signal['symbol']
+            qty = int(signal['size']) # Convert to int for safety
             
-            # CRITICAL FIX: Round stop loss to 2 decimal places so Alpaca doesn't reject it
-            stop_loss_price = round(float(signal), 2)
+            # FIX: Access the specific column before converting to float
+            stop_loss_price = round(float(signal['stop_loss']), 2)
 
             print(f"Processing signal {signal_id}: BUY {qty} {symbol} with SL {stop_loss_price}")
 
@@ -63,7 +65,7 @@ def process_signals():
 
                 print(f"✅ Order submitted successfully: {order.id}")
 
-                # CRITICAL FIX: Immediately mark as SUBMITTED so we don't accidentally buy it again!
+                # Mark as SUBMITTED immediately
                 cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED' WHERE id = ?", (signal_id,))
                 conn.commit()
 
@@ -76,7 +78,7 @@ def process_signals():
                 filled_qty = updated_order.filled_qty
 
                 if fill_price is None or float(filled_qty) == 0:
-                    print(f"Order {order.id} is accepted but not filled yet (Market closed or low volume).")
+                    print(f"Order {order.id} is accepted but not filled yet.")
                     continue
 
                 filled_at = updated_order.filled_at
@@ -92,7 +94,7 @@ def process_signals():
                 dt = dt.astimezone(datetime.timezone.utc)
                 formatted_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                # Log executed trade for the Dashboard
+                # Log executed trade
                 cursor.execute("""
                     INSERT INTO executed_trades (symbol, timestamp, price, qty, side)
                     VALUES (?, ?, ?, ?, ?)
@@ -106,7 +108,6 @@ def process_signals():
 
             except Exception as e:
                 print(f"❌ Error processing signal {signal_id} with Alpaca: {e}")
-                # Mark as FAILED so it doesn't get stuck in a loop trying to submit bad data
                 cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
                 conn.commit()
 
