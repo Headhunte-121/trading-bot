@@ -58,7 +58,7 @@ def load_llm():
     )
     
     return text_generator
-    
+
 def analyze_headline(headline, symbol, llm_pipeline):
     # This prompt forces the model to "think" before it scores.
     # It explicitly forbids "Guilt by Association" (e.g. Samsung news != Apple news).
