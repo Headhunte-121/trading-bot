@@ -65,13 +65,19 @@ def load_llm():
 
 def build_prompt(headline, symbol):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-Act as a high-frequency quant analyst. Your output must be a JSON object. For the given headline and ticker, provide:
-relevance: 0.0 to 1.0 (Direct impact vs. noise).
-sentiment: -1.0 to 1.0 (Calculated using decimal precision).
-urgency: 0 to 5 (How fast must a trader react?).
-Do NOT use rounded numbers like 0.5 or 0.8. Use the full decimal range based on the strength of the verbs used in the headline.
+Act as a high-frequency quant analyst. You must output a valid JSON object.
+Your task is to analyze the headline for the ticker {symbol}.
 
-Return ONLY a JSON object: {{"relevance": <float>, "sentiment": <float>, "urgency": <int>}}
+RULES:
+1. SUBJECT CHECK: If the headline mentions a competitor or different company and NOT {symbol}, relevance is 0.0.
+2. REASONING: You must explain your logic in one short sentence starting with "This headline..."
+3. SCORING:
+   - relevance: 0.0 (irrelevant) to 1.0 (direct impact)
+   - sentiment: -1.0 (very negative) to 1.0 (very positive)
+   - urgency: 0 (noise) to 5 (immediate action)
+
+Output strict JSON only. No conversational filler.
+Format: {{"reasoning": "...", "relevance": <float>, "sentiment": <float>, "urgency": <int>}}
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 Headline: "{headline}"
 Ticker: {symbol}
@@ -123,7 +129,8 @@ def main():
         try:
             cursor = conn.cursor()
             # Fetch up to 160 un-scored headlines
-            cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE sentiment_score IS NULL LIMIT 160")
+            # Changed to check relevance IS NULL to catch new items or reprocessing needs
+            cursor.execute("SELECT id, symbol, headline FROM raw_news WHERE relevance IS NULL LIMIT 160")
             rows = cursor.fetchall()
 
             if rows:
@@ -146,11 +153,6 @@ def main():
                     for row, res in zip(batch_rows, results):
                         # res is like [{'generated_text': '...'}]
                         generated_text = res[0]['generated_text']
-                        # The generated text includes the prompt. We need to parse the JSON at the end.
-                        # The prompt ends with <|end_header_id|>assistant<|end_header_id|>
-                        # But our regex in parse_llm_output finds the first { after that hopefully, or we can split.
-                        # Since the prompt contains "JSON object: {...}", we need to be careful not to match that.
-                        # We should split by "assistant<|end_header_id|>"
 
                         response_part = generated_text.split("assistant<|end_header_id|>")[-1]
                         data = parse_llm_output(response_part)
@@ -158,12 +160,14 @@ def main():
                         sentiment = 0.0
                         relevance = 0.0
                         urgency = 0
+                        reasoning = ""
 
                         if data:
                             try:
                                 sentiment = float(data.get("sentiment", 0.0))
                                 relevance = float(data.get("relevance", 0.0))
                                 urgency = int(data.get("urgency", 0))
+                                reasoning = data.get("reasoning", "")
 
                                 # Clamp values
                                 sentiment = max(-1.0, min(1.0, sentiment))
@@ -177,20 +181,29 @@ def main():
 
                         # Log high conviction
                         if abs(final_score) > 0.4:
-                            print(f"   --> {row['symbol']}: {final_score:+.2f} (Rel: {relevance:.2f}, Urg: {urgency}) | {row['headline'][:50]}...")
+                            print(f"   --> {row['symbol']}: {final_score:+.2f} (Rel: {relevance:.2f}) | {reasoning[:60]}...")
 
                     # Update DB for this batch
                     update_db_batch(conn, updates)
                     total_processed += len(updates)
 
                 print(f"✅ Finished cycle. Processed {total_processed} items.")
+
+                if total_processed > 0:
+                    print(f"🚀 Backlog detected. Continuing immediately...")
+                    conn.close()
+                    continue
             
         except Exception as e:
             print(f"Loop Error: {e}")
             import traceback
             traceback.print_exc()
         finally:
-            conn.close()
+            # We already closed it above if we continued, but safe to close again (it's idempotent or check if open)
+            try:
+                conn.close()
+            except:
+                pass
 
         # Smart Sleep Logic
         status = get_market_status()
