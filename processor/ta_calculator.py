@@ -18,7 +18,7 @@ def calculate_indicators():
         cursor.execute("SELECT DISTINCT symbol FROM market_data")
         symbols = [row[0] for row in cursor.fetchall()]
 
-        print(f"Processing {len(symbols)} symbols: {symbols}")
+        print(f"Processing {len(symbols)} symbols...")
 
         for symbol in symbols:
             # Get last processed timestamp
@@ -29,12 +29,11 @@ def calculate_indicators():
             df = pd.DataFrame()
 
             if last_ts:
-                # Fetch lookback (200 rows) for warm-up + new data
-                # Using 2 separate queries to avoid complex UNION syntax issues and ensure correct sorting
+                # Fetch lookback (300 rows) for warm-up + new data
                 query_lookback = """
                     SELECT * FROM market_data
                     WHERE symbol = ? AND timestamp <= ?
-                    ORDER BY timestamp DESC LIMIT 200
+                    ORDER BY timestamp DESC LIMIT 300
                 """
                 df_lookback = pd.read_sql_query(query_lookback, conn, params=(symbol, last_ts))
 
@@ -53,18 +52,19 @@ def calculate_indicators():
                 df_lookback = df_lookback.iloc[::-1] # Reverse to chronological order
                 df = pd.concat([df_lookback, df_new])
             else:
-                # Full load if no history
-                query = "SELECT * FROM market_data WHERE symbol = ? ORDER BY timestamp ASC"
+                # Full load if no history (Limit to last 1000 rows to prevent OOM on large history)
+                query = """
+                    SELECT * FROM market_data
+                    WHERE symbol = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1000
+                """
                 df = pd.read_sql_query(query, conn, params=(symbol,))
+                df = df.iloc[::-1] # Reverse to ASC
 
             if df.empty or len(df) < 14:
                 print(f"Not enough data for {symbol}. Skipping.")
                 continue
-
-            # Ensure columns are float for calculation
-            # SQLite might return strings if declared as REAL but inserted as text? No, REAL is float.
-            # But safe to cast.
-            # pandas-ta needs 'close'
 
             # Calculate RSI (14)
             try:
@@ -95,7 +95,6 @@ def calculate_indicators():
             # Filter for rows to insert
             if last_ts:
                 # Only keep rows strictly newer than last_ts
-                # We use string comparison which works for ISO8601
                 df_to_insert = df[df['timestamp'] > last_ts].copy()
             else:
                 df_to_insert = df.copy()
@@ -127,6 +126,8 @@ def calculate_indicators():
                 conn.commit()
             except sqlite3.OperationalError as e:
                  print(f"Insertion failed for {symbol}: {e}")
+
+        print("TA Calculator finished cycle.")
 
     except Exception as e:
         print(f"An error occurred: {e}")

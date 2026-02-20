@@ -10,6 +10,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, DB_PATH
 from shared.schema import setup_database
+from shared.config import SYMBOLS
 
 def fetch_market_data(symbols, period="5d", interval="5m"):
     """
@@ -42,7 +43,7 @@ def fetch_market_data(symbols, period="5d", interval="5m"):
 
 def save_to_db(data_dict):
     """
-    Inserts market data into the database.
+    Inserts market data into the database using batch execution.
     """
     conn = None
     try:
@@ -53,30 +54,36 @@ def save_to_db(data_dict):
         for symbol, df in data_dict.items():
             print(f"💾 Saving {len(df)} rows for {symbol}...")
             
+            rows_to_insert = []
             for index, row in df.iterrows():
-                # Ensure UTC timestamp
-                if index.tzinfo is None:
-                    ts_utc = index.tz_localize(datetime.timezone.utc)
-                else:
-                    ts_utc = index.tz_convert(datetime.timezone.utc)
-
-                timestamp = ts_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-                # Handle yfinance sometimes missing columns or having different casing
                 try:
+                    # Ensure UTC timestamp
+                    if index.tzinfo is None:
+                        ts_utc = index.tz_localize(datetime.timezone.utc)
+                    else:
+                        ts_utc = index.tz_convert(datetime.timezone.utc)
+
+                    timestamp = ts_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+                    # Handle yfinance sometimes missing columns or having different casing
                     open_price = row.get('Open', 0.0)
                     high_price = row.get('High', 0.0)
                     low_price = row.get('Low', 0.0)
                     close_price = row.get('Close', 0.0)
                     volume = row.get('Volume', 0)
 
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO market_data
-                        (symbol, timestamp, open, high, low, close, volume)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (symbol, timestamp, open_price, high_price, low_price, close_price, volume))
+                    rows_to_insert.append((symbol, timestamp, open_price, high_price, low_price, close_price, volume))
+
                 except Exception as row_error:
-                    continue # Skip bad rows
+                    print(f"Error processing row for {symbol}: {row_error}")
+                    continue
+
+            if rows_to_insert:
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO market_data
+                    (symbol, timestamp, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', rows_to_insert)
 
         conn.commit()
         print("✅ Data batch successfully inserted into database.")
@@ -89,18 +96,9 @@ def save_to_db(data_dict):
 
 if __name__ == "__main__":
     setup_database()
-
-    # NOTE: Changed 'BRK.B' to 'BRK-B' because Yahoo Finance uses a dash, not a dot.
-    symbols = [
-        'NVDA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META', 'AVGO', 'TSLA', 'BRK-B', 
-        'WMT', 'LLY', 'JPM', 'XOM', 'V', 'JNJ', 'MU', 'MA', 'ORCL', 'COST', 
-        'ABBV', 'BAC', 'HD', 'CVX', 'PG', 'CAT', 'GE', 'KO', 'AMD', 'NFLX', 
-        'PLTR', 'CSCO', 'MRK', 'LRCX', 'AMAT', 'PM', 'MS', 'RTX', 'GS', 'WFC', 
-        'UNH', 'IBM', 'TMUS', 'MCD', 'AXP', 'LIN', 'GEV', 'PEP', 'INTC', 'VZ'
-    ]
     
-    print(f"🚀 Fetching 5-minute data for {len(symbols)} symbols...")
-    market_data = fetch_market_data(symbols)
+    print(f"🚀 Fetching 5-minute data for {len(SYMBOLS)} symbols...")
+    market_data = fetch_market_data(SYMBOLS)
 
     # CRITICAL FIX: Checking truthiness of a Dictionary, not a DataFrame
     if market_data is not None and len(market_data) > 0:
