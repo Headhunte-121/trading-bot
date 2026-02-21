@@ -26,6 +26,7 @@ DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
 # Import shared modules
 sys.path.append(BASE_DIR)
 from shared.smart_sleep import get_market_status
+from shared.db_utils import get_db_connection as shared_get_db_connection
 
 # --- Configuration ---
 st.set_page_config(
@@ -43,10 +44,12 @@ def load_css(file_path):
 
 def get_db_connection():
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5.0)
+        # Use shared connection logic to enable WAL mode and optimizations
+        conn = shared_get_db_connection(DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
     except Exception as e:
+        print(f"[ERROR] Database connection failed: {e}", file=sys.stderr)
         return None
 
 def get_data(query, params=None):
@@ -58,6 +61,7 @@ def get_data(query, params=None):
             return df
         return pd.DataFrame()
     except Exception as e:
+        print(f"[ERROR] Query failed: {e}", file=sys.stderr)
         return pd.DataFrame()
 
 def get_config_value(key, default="AUTO"):
@@ -71,6 +75,7 @@ def get_config_value(key, default="AUTO"):
             if row:
                 return row['value']
     except Exception as e:
+        print(f"[ERROR] Failed to get config '{key}': {e}", file=sys.stderr)
         pass
     return default
 
@@ -83,7 +88,7 @@ def set_config_value(key, value):
             conn.close()
             return True
     except Exception as e:
-        print(f"Error setting config: {e}")
+        print(f"[ERROR] Failed to set config '{key}': {e}", file=sys.stderr)
     return False
 
 # --- Data Fetching Functions ---
@@ -107,11 +112,16 @@ def get_gpu_load():
 
 def get_ticker_tape():
     query = """
-        SELECT symbol, close, open, volume
-        FROM market_data
-        WHERE timeframe = '5m'
-        AND timestamp = (SELECT MAX(timestamp) FROM market_data WHERE timeframe = '5m')
-        ORDER BY volume DESC
+        SELECT m.symbol, m.close, m.open, m.volume
+        FROM market_data m
+        INNER JOIN (
+            SELECT symbol, MAX(timestamp) as max_ts
+            FROM market_data
+            WHERE timeframe = '5m'
+            GROUP BY symbol
+        ) latest ON m.symbol = latest.symbol AND m.timestamp = latest.max_ts
+        WHERE m.timeframe = '5m'
+        ORDER BY m.volume DESC
         LIMIT 15
     """
     df = get_data(query)
@@ -124,13 +134,22 @@ def get_ensemble_radar():
     # Latest predictions + Latest RSI
     query = """
         WITH LatestPred AS (
-            SELECT * FROM ai_predictions
-            WHERE timestamp = (SELECT MAX(timestamp) FROM ai_predictions)
+            SELECT p.*
+            FROM ai_predictions p
+            INNER JOIN (
+                SELECT symbol, MAX(timestamp) as max_ts
+                FROM ai_predictions
+                GROUP BY symbol
+            ) max_p ON p.symbol = max_p.symbol AND p.timestamp = max_p.max_ts
         ),
         LatestTech AS (
-            SELECT symbol, rsi_14
-            FROM technical_indicators
-            WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
+            SELECT t.symbol, t.rsi_14
+            FROM technical_indicators t
+            INNER JOIN (
+                SELECT symbol, MAX(timestamp) as max_ts
+                FROM technical_indicators
+                GROUP BY symbol
+            ) max_t ON t.symbol = max_t.symbol AND t.timestamp = max_t.max_ts
         )
         SELECT
             p.symbol,
@@ -185,10 +204,14 @@ def get_ensemble_radar():
 
 def get_technical_heatmap():
     query = """
-        SELECT symbol, rsi_14, sma_50, sma_200, timestamp
-        FROM technical_indicators
-        WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
-        ORDER BY rsi_14 ASC
+        SELECT t.symbol, t.rsi_14, t.sma_50, t.sma_200, t.timestamp
+        FROM technical_indicators t
+        INNER JOIN (
+            SELECT symbol, MAX(timestamp) as max_ts
+            FROM technical_indicators
+            GROUP BY symbol
+        ) latest ON t.symbol = latest.symbol AND t.timestamp = latest.max_ts
+        ORDER BY t.rsi_14 ASC
     """
     return get_data(query)
 
