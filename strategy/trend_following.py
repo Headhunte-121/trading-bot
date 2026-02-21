@@ -10,16 +10,6 @@ from shared.db_utils import get_db_connection, log_system_event
 from shared.config import KINGS_LIST
 from shared.smart_sleep import get_sleep_seconds
 
-def get_config_value(cursor, key, default="AUTO"):
-    try:
-        cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
-        row = cursor.fetchone()
-        if row:
-            return row['value']
-    except Exception:
-        pass
-    return default
-
 def get_macro_regime(cursor):
     """
     Determines the market regime based on SPY 5m data.
@@ -64,14 +54,11 @@ def run_strategy():
     cursor = conn.cursor()
 
     try:
-        # 1. Determine Global Macro Regime (Equities)
+        # 1. Determine Global Macro Regime
         macro_regime = get_macro_regime(cursor)
         # print(f"🌍 Global Macro Regime: {macro_regime}")
 
-        # 2. Get Crypto Mode
-        crypto_mode = get_config_value(cursor, "crypto_mode", "ACTIVE")
-
-        # 3. Fetch Candidates (Last 60 mins)
+        # 2. Fetch Candidates (Last 60 mins)
         lookback_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=60)
         lookback_iso = lookback_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -127,17 +114,6 @@ def run_strategy():
             if None in [close, volume, sma_200, rsi, vwap, atr, vol_sma, pred_pct]:
                 continue
 
-            # Asset Class Check
-            is_crypto = "/USD" in symbol
-
-            # Crypto Passive Mode Check
-            if is_crypto and crypto_mode == "PASSIVE":
-                continue
-
-            # Determine Regime for this asset
-            # Crypto ignores SPY macro and is always treated as BULL for Trend Buy logic
-            current_regime = 'BULL' if is_crypto else macro_regime
-
             # Check for duplicate signal
             cursor.execute(
                 "SELECT id FROM trade_signals WHERE symbol = ? AND timestamp = ?",
@@ -171,7 +147,7 @@ def run_strategy():
 
             # Tier 3: TREND_BUY (The Wave Surfer)
             # Logic: Bull Market + Above SMA 200 + Healthy RSI + Volume + AI Conviction
-            elif (current_regime == 'BULL' and
+            elif (macro_regime == 'BULL' and
                   close > sma_200 and
                   35 < rsi < 55 and
                   pred_pct > 0.5 and
