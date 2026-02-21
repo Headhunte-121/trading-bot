@@ -93,6 +93,7 @@ class RiskManager:
                     ts.id,
                     ts.symbol,
                     ts.timestamp,
+                    ts.signal_type,
                     (
                         SELECT close
                         FROM market_data md
@@ -103,7 +104,6 @@ class RiskManager:
                     ) as close
                 FROM trade_signals ts
                 WHERE ts.status = 'PENDING'
-                AND (ts.signal_type LIKE '%BUY' OR ts.signal_type LIKE '%SCALP')
             """
             cursor.execute(query)
             pending_signals = cursor.fetchall()
@@ -111,7 +111,7 @@ class RiskManager:
             if not pending_signals:
                 return
 
-            log_system_event(self.service_name, "INFO", f"Found {len(pending_signals)} pending BUY signals.")
+            log_system_event(self.service_name, "INFO", f"Found {len(pending_signals)} pending signals.")
 
             updates: List[Tuple[int, int]] = []
             expired_updates: List[Tuple[int]] = []
@@ -121,6 +121,7 @@ class RiskManager:
             for signal in pending_signals:
                 signal_id = signal['id']
                 symbol = signal['symbol']
+                signal_type = signal['signal_type']
                 close_price = signal['close']
                 timestamp_str = signal['timestamp']
 
@@ -141,6 +142,14 @@ class RiskManager:
                     log_system_event(self.service_name, "ERROR", f"Error parsing timestamp for signal {signal_id}: {e}")
                     continue
 
+                # --- Exit Signal Logic ---
+                if 'EXIT' in signal_type:
+                    # Exits do not need sizing; the executor will sell ALL shares.
+                    updates.append((0, signal_id))
+                    log_system_event(self.service_name, "INFO", f"Approved EXIT signal {signal_id}: {symbol} ({signal_type})")
+                    continue
+
+                # --- Buy Signal Sizing Logic ---
                 if close_price is None:
                     log_system_event(self.service_name, "WARNING", f"Skipping signal {signal_id} ({symbol}): No market data.")
                     continue
