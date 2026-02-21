@@ -314,6 +314,11 @@ class AlpacaExecutor:
             conn = None
             try:
                 conn = get_db_connection()
+                if not conn:
+                    self._log("ERROR", "❌ DB Connection failed. Sleeping 5s...")
+                    time.sleep(5)
+                    continue
+
                 conn.row_factory = sqlite3.Row
 
                 # 1. Process Sized Signals (Buy)

@@ -39,7 +39,7 @@ def get_config_value(key, default):
     """
     conn = None
     try:
-        conn = get_db_connection(timeout=1.0)  # Short timeout
+        conn = get_db_connection(timeout=1.0, log_error=False)  # Short timeout, silent fail
         if conn is None:
             return default
 
