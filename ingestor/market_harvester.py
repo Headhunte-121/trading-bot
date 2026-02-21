@@ -5,11 +5,12 @@ import pandas as pd
 import sqlite3
 import datetime
 import time
+import threading
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
-from shared.config import SYMBOLS
+from shared.config import SYMBOLS, CRYPTO_SYMBOLS
 from shared.smart_sleep import get_sleep_seconds
 
 def get_last_timestamp(cursor, symbol, timeframe):
@@ -40,6 +41,9 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
         # Determine fetch strategy
         df = pd.DataFrame()
 
+        # Translation for yfinance (BTC/USD -> BTC-USD)
+        yf_symbol = symbol.replace("/", "-")
+
         if last_ts:
             # Parse timestamp to check if we need to fetch
             last_dt = datetime.datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
@@ -48,11 +52,11 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
             # Use 'start' parameter for updates
             # yfinance history with start date fetches from 00:00 of that date
             # print(f"🔄 Updating {symbol} ({timeframe}). Last: {last_ts}...")
-            df = yf.Ticker(symbol).history(start=start_date, interval=interval)
+            df = yf.Ticker(yf_symbol).history(start=start_date, interval=interval)
         else:
             # Full fetch if no history
             # print(f"📜 Initial Fetch {symbol} ({timeframe})...")
-            df = yf.Ticker(symbol).history(period=period, interval=interval)
+            df = yf.Ticker(yf_symbol).history(period=period, interval=interval)
 
         if df.empty:
             # print(f"⚠️ No data returned for {symbol} ({timeframe}). Market holiday or halt?")
@@ -173,10 +177,16 @@ def initial_sync():
     print("🇺🇸 Syncing SPY Daily Data...")
     fetch_and_store("SPY", "1d", "2y", "1d")
 
+    # Sync CRYPTO (Daily)
+    print("₿ Syncing Crypto Daily Data...")
+    for symbol in CRYPTO_SYMBOLS:
+        fetch_and_store(symbol, "1d", "2y", "1d")
+        time.sleep(0.1)
+
     print("✅ Initial Sync Complete.")
     log_system_event("MarketHarvester", "INFO", "Initial Sync Complete")
 
-def intraday_sync():
+def intraday_sync_equities():
     """
     Runs every 5 minutes (or adaptive loop) to fetch recent data.
     Implements Eagle Eye: 1m for Hot List, 5m for others.
@@ -214,20 +224,50 @@ def intraday_sync():
     print(f"✅ Synced: {count_5m} symbols (5m), {count_1m} symbols (1m).")
     log_system_event("MarketHarvester", "INFO", f"Synced: {count_5m} symbols (5m), {count_1m} symbols (1m)")
 
+def run_equities_loop():
+    print("🚀 Starting Equities Harvester Loop...")
+    while True:
+        intraday_sync_equities()
+        # Smart Sleep
+        sleep_sec = get_sleep_seconds()
+        print(f"💤 Equities Sleeping for {sleep_sec} seconds...")
+        time.sleep(sleep_sec)
+
+def run_crypto_loop():
+    print("🚀 Starting Crypto Harvester Loop (24/7)...")
+    while True:
+        print("₿ Running Crypto Sync...")
+        count_crypto = 0
+        for symbol in CRYPTO_SYMBOLS:
+            # Crypto is always 5m for now as per requirements
+            if fetch_and_store(symbol, "5m", "1d", "5m", limit=5):
+                count_crypto += 1
+            time.sleep(0.1)
+
+        print(f"✅ Crypto Synced: {count_crypto} symbols.")
+        log_system_event("MarketHarvester", "INFO", f"Crypto Synced: {count_crypto} symbols")
+
+        time.sleep(300) # Strict 5 minute loop
+
 def main():
     print("🚀 Starting Smart Market Harvester (Dual-Mode)...")
     
     # 1. Initial Sync (One-time)
     initial_sync()
 
-    # 2. Intraday Loop
-    while True:
-        intraday_sync()
+    # 2. Start Threads
+    t1 = threading.Thread(target=run_equities_loop, daemon=True)
+    t2 = threading.Thread(target=run_crypto_loop, daemon=True)
 
-        # Smart Sleep
-        sleep_sec = get_sleep_seconds()
-        print(f"💤 Sleeping for {sleep_sec} seconds...")
-        time.sleep(sleep_sec)
+    t1.start()
+    t2.start()
+
+    # Keep main thread alive
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Stopping Harvester...")
 
 if __name__ == "__main__":
     main()

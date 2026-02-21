@@ -66,9 +66,27 @@ def process_signals(api):
         for signal in signals:
             signal_id = signal['id']
             symbol = signal['symbol']
-            qty = int(signal['size'])
+            raw_size = float(signal['size'])
             signal_type = signal['signal_type']
             atr = signal['atr']
+
+            # Determine Qty and Precision
+            qty = 0
+            if "/USD" in symbol:
+                # Crypto Logic
+                # Use estimated price to determine precision
+                # We sized based on $1000. So Price = 1000 / Size
+                estimated_price = 1000.0 / raw_size if raw_size > 0 else 0
+
+                if estimated_price < 1.0:
+                    # Low cap / High Precision
+                    qty = round(raw_size, 8)
+                else:
+                    # Standard
+                    qty = round(raw_size, 4)
+            else:
+                # Equity Logic (Shares must be int)
+                qty = int(raw_size)
 
             try:
                 # 1. Submit Market Buy Order
@@ -147,7 +165,7 @@ def process_signals(api):
                         # Construct arguments
                         order_args = {
                             "symbol": symbol,
-                            "qty": filled_qty,
+                            "qty": filled_qty, # Use exact filled qty
                             "side": "sell",
                             "type": "trailing_stop",
                             "time_in_force": "gtc"

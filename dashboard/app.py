@@ -105,11 +105,15 @@ def get_gpu_load():
     except:
         return 0
 
-def get_ticker_tape():
-    query = """
+def get_ticker_tape(asset_class='EQUITIES'):
+    # Filter clause
+    filter_clause = "AND symbol NOT LIKE '%/USD'" if asset_class == 'EQUITIES' else "AND symbol LIKE '%/USD'"
+
+    query = f"""
         SELECT symbol, close, open, volume
         FROM market_data
         WHERE timeframe = '5m'
+        {filter_clause}
         AND timestamp = (SELECT MAX(timestamp) FROM market_data WHERE timeframe = '5m')
         ORDER BY volume DESC
         LIMIT 15
@@ -120,7 +124,7 @@ def get_ticker_tape():
         return df
     return pd.DataFrame()
 
-def get_ensemble_radar():
+def get_ensemble_radar(asset_class='EQUITIES'):
     # Latest predictions + Latest RSI
     query = """
         WITH LatestPred AS (
@@ -144,6 +148,15 @@ def get_ensemble_radar():
     """
     df = get_data(query)
     if not df.empty:
+        # Filter by asset class
+        if asset_class == 'EQUITIES':
+            df = df[~df['symbol'].str.contains('/USD')]
+        else:
+            df = df[df['symbol'].str.contains('/USD')]
+
+        if df.empty:
+            return pd.DataFrame()
+
         # Calculate Conviction Score
         # Magnitude: |(pred - curr) / curr|
         # Agreement: |(large - small) / curr| (Lower is better)
@@ -183,14 +196,21 @@ def get_ensemble_radar():
 
     return pd.DataFrame()
 
-def get_technical_heatmap():
+def get_technical_heatmap(asset_class='EQUITIES'):
     query = """
         SELECT symbol, rsi_14, sma_50, sma_200, timestamp
         FROM technical_indicators
         WHERE timestamp = (SELECT MAX(timestamp) FROM technical_indicators)
         ORDER BY rsi_14 ASC
     """
-    return get_data(query)
+    df = get_data(query)
+    if not df.empty:
+        # Filter by asset class
+        if asset_class == 'EQUITIES':
+            df = df[~df['symbol'].str.contains('/USD')]
+        else:
+            df = df[df['symbol'].str.contains('/USD')]
+    return df
 
 def get_chart_data(symbol):
     query = """
@@ -229,6 +249,7 @@ def render_sidebar():
     st.sidebar.markdown("## 🧬 QUANT TERMINAL")
 
     # --- System Power Mode Control ---
+    st.sidebar.markdown("### SYSTEM OVERRIDES (EQUITIES)")
     current_mode = get_config_value("sleep_mode", "AUTO")
 
     mode_map = {
@@ -239,7 +260,7 @@ def render_sidebar():
     reverse_mode_map = {v: k for k, v in mode_map.items()}
 
     selected_label = st.sidebar.radio(
-        "SYSTEM POWER MODE",
+        "POWER MODE",
         options=list(mode_map.values()),
         index=list(mode_map.keys()).index(current_mode) if current_mode in mode_map else 0,
         key="power_mode_radio"
@@ -293,8 +314,8 @@ def render_sidebar():
             index=symbol_list.index(st.session_state.selected_symbol) if st.session_state.selected_symbol in symbol_list else 0
         )
 
-def render_ticker_tape():
-    df = get_ticker_tape()
+def render_ticker_tape(asset_class='EQUITIES'):
+    df = get_ticker_tape(asset_class)
     if not df.empty:
         items = []
         for row in df.itertuples():
@@ -318,14 +339,14 @@ def render_ticker_tape():
         # Bug 2 Fix: unsafe_allow_html=True is mandatory here
         st.markdown(full_html, unsafe_allow_html=True)
 
-def render_radar(df):
+def render_radar(df, key_suffix=''):
     st.markdown("### 🔮 PREDICTION RADAR")
     if not df.empty:
         # Configure AgGrid
         gb = GridOptionsBuilder.from_dataframe(df[['symbol', 'current_price', 'ensemble_predicted_price', 'conviction', 'agreement', 'direction']])
         gb.configure_column("symbol", header_name="SYM", width=80, pinned="left")
-        gb.configure_column("current_price", header_name="PRICE", width=100, type=["numericColumn"], valueFormatter="x.toFixed(2)")
-        gb.configure_column("ensemble_predicted_price", header_name="TARGET (T+30)", width=120, type=["numericColumn"], valueFormatter="x.toFixed(2)")
+        gb.configure_column("current_price", header_name="PRICE", width=100, type=["numericColumn"], valueFormatter="x.toFixed(4)") # Increased precision for crypto
+        gb.configure_column("ensemble_predicted_price", header_name="TARGET (T+30)", width=120, type=["numericColumn"], valueFormatter="x.toFixed(4)")
         gb.configure_column("agreement", header_name="AGR", width=60)
         gb.configure_column("direction", header_name="DIR", width=80, cellStyle=JsCode("""
             function(params) {
@@ -371,7 +392,8 @@ def render_radar(df):
             height=400,
             theme='alpine-dark',
             update_mode='SELECTION_CHANGED',
-            fit_columns_on_grid_load=True
+            fit_columns_on_grid_load=True,
+            key=f'radar_grid_{key_suffix}'
         )
 
         # Bug 3 Fix: Handle AgGrid selection robustness
@@ -486,20 +508,24 @@ def render_chart(symbol, radar_df):
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False)
 
-    # Bug 1 Fix: Rangebreaks for dead air
-    fig.update_xaxes(
-        rangebreaks=[
-            dict(bounds=["sat", "mon"]), # Hide weekends
-            dict(bounds=[16, 9.5], pattern="hour"), # Hide after hours (assuming NY 16:00 to 09:30)
-        ]
-    )
+    # Check for Crypto weekend rangebreak logic
+    is_crypto = '/USD' in symbol
+
+    if not is_crypto:
+        # Bug 1 Fix: Rangebreaks for dead air (Only for Equities)
+        fig.update_xaxes(
+            rangebreaks=[
+                dict(bounds=["sat", "mon"]), # Hide weekends
+                dict(bounds=[16, 9.5], pattern="hour"), # Hide after hours (assuming NY 16:00 to 09:30)
+            ]
+        )
 
     # Deprecation Fix: use_container_width -> width="stretch" (Not strictly valid for plotly_chart yet, sticking to use_container_width=True based on docs, but user asked for fix. Actually use_container_width is correct for st.plotly_chart. The warning was for st.dataframe. I will fix st.dataframe.)
     st.plotly_chart(fig, config={'displayModeBar': False})
 
-def render_heatmap():
+def render_heatmap(asset_class='EQUITIES', key_suffix=''):
     st.markdown("### 🔥 RSI HEATMAP")
-    df = get_technical_heatmap()
+    df = get_technical_heatmap(asset_class)
     if not df.empty:
         # Configure AgGrid for Heatmap to enable selection
         gb = GridOptionsBuilder.from_dataframe(df[['symbol', 'rsi_14', 'sma_50', 'sma_200']])
@@ -528,7 +554,7 @@ def render_heatmap():
             theme='alpine-dark',
             update_mode='SELECTION_CHANGED',
             fit_columns_on_grid_load=True,
-            key='heatmap_grid'
+            key=f'heatmap_grid_{key_suffix}'
         )
 
         # Bug 3 Fix: Same fix for Heatmap
@@ -584,41 +610,73 @@ def main():
     load_css(os.path.join(os.path.dirname(__file__), "style.css"))
 
     render_sidebar()
-    render_ticker_tape()
 
-    # Quad Layout
-    # Row 1
-    c1, c2 = st.columns([4, 6]) # 40% / 60% split
+    # Tabs
+    tab_equities, tab_crypto = st.tabs(["🇺🇸 EQUITIES", "₿ CRYPTO"])
 
-    radar_data = get_ensemble_radar()
+    with tab_equities:
+        render_ticker_tape('EQUITIES')
 
-    with c1:
-        render_radar(radar_data)
+        # Quad Layout
+        c1, c2 = st.columns([4, 6])
+        radar_data = get_ensemble_radar('EQUITIES')
+        with c1:
+            render_radar(radar_data, key_suffix='eq')
+        with c2:
+            selected_symbol = st.session_state.get('selected_symbol', None)
+            render_chart(selected_symbol, radar_data)
 
-    with c2:
-        selected_symbol = st.session_state.get('selected_symbol', None)
-        render_chart(selected_symbol, radar_data)
+        st.divider()
 
-    st.divider()
+        c3, c4 = st.columns([4, 6])
+        with c3:
+            render_heatmap('EQUITIES', key_suffix='eq')
+        with c4:
+            st.markdown("### 🎛️ SYSTEM CONTROL")
+            sub_tab1, sub_tab2, sub_tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
+            with sub_tab1:
+                st.dataframe(get_active_signals(), height=300)
+            with sub_tab2:
+                st.dataframe(get_ledger(), height=300)
+            with sub_tab3:
+                render_logs()
 
-    # Row 2
-    c3, c4 = st.columns([4, 6])
+    with tab_crypto:
+        # Crypto Control Panel
+        c_status, c_tape = st.columns([2, 8])
 
-    with c3:
-        render_heatmap()
+        with c_status:
+            current_crypto_mode = get_config_value("crypto_mode", "ACTIVE")
+            new_crypto_mode = st.radio("CRYPTO STATUS", ["ACTIVE", "PASSIVE"], index=0 if current_crypto_mode == "ACTIVE" else 1)
+            if new_crypto_mode != current_crypto_mode:
+                set_config_value("crypto_mode", new_crypto_mode)
+                st.rerun()
 
-    with c4:
-        st.markdown("### 🎛️ SYSTEM CONTROL")
-        tab1, tab2, tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
+        with c_tape:
+            render_ticker_tape('CRYPTO')
 
-        with tab1:
-            st.dataframe(get_active_signals(), height=300)
+        c1, c2 = st.columns([4, 6])
+        radar_data_c = get_ensemble_radar('CRYPTO')
+        with c1:
+            render_radar(radar_data_c, key_suffix='crypto')
+        with c2:
+            selected_symbol = st.session_state.get('selected_symbol', None)
+            render_chart(selected_symbol, radar_data_c)
 
-        with tab2:
-            st.dataframe(get_ledger(), height=300)
+        st.divider()
 
-        with tab3:
-            render_logs()
+        c3, c4 = st.columns([4, 6])
+        with c3:
+            render_heatmap('CRYPTO', key_suffix='crypto')
+        with c4:
+             st.markdown("### 🎛️ SYSTEM CONTROL")
+             sub_tab1, sub_tab2, sub_tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
+             with sub_tab1:
+                 st.dataframe(get_active_signals(), height=300)
+             with sub_tab2:
+                 st.dataframe(get_ledger(), height=300)
+             with sub_tab3:
+                 render_logs()
 
 if __name__ == "__main__":
     main()
