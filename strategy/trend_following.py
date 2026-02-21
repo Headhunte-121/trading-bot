@@ -15,6 +15,115 @@ from shared.db_utils import get_db_connection, log_system_event
 from shared.config import KINGS_LIST
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
+try:
+    from alpaca_trade_api.rest import REST
+except ImportError:
+    REST = None
+
+
+def get_alpaca_api():
+    """Initializes Alpaca API for exit evaluation."""
+    api_key = os.getenv("APCA_API_KEY_ID")
+    api_secret = os.getenv("APCA_API_SECRET_KEY")
+    base_url = os.getenv("APCA_API_BASE_URL")
+
+    if REST and api_key and api_secret and base_url:
+        return REST(api_key, api_secret, base_url)
+    return None
+
+
+def evaluate_exits(cursor):
+    """
+    Evaluates open positions for potential AI-driven exits.
+    Implements a 3-Tier Exit Matrix:
+    1. Take Profit Exit: Unrealized PL > 1% AND (AI < -0.4% OR Close < SMA 50)
+    2. Panic Eject Exit: Unrealized PL < 0% AND (AI < -0.5% AND RSI < 40)
+    3. Healthy Dip: Do nothing (let trailing stop handle it)
+    """
+    api = get_alpaca_api()
+    if not api:
+        return
+
+    try:
+        positions = api.list_positions()
+        if not positions:
+            return
+
+        for pos in positions:
+            symbol = pos.symbol
+            try:
+                unrealized_plpc = float(pos.unrealized_plpc)
+            except (ValueError, TypeError):
+                continue
+
+            # Fetch latest technicals and AI prediction from DB
+            query = """
+                SELECT
+                    m.close,
+                    t.sma_50,
+                    t.rsi_14,
+                    p.ensemble_pct_change
+                FROM market_data m
+                JOIN technical_indicators t
+                  ON m.symbol = t.symbol
+                  AND m.timestamp = t.timestamp
+                  AND m.timeframe = t.timeframe
+                JOIN ai_predictions p
+                  ON m.symbol = p.symbol
+                  AND m.timestamp = p.timestamp
+                WHERE
+                    m.symbol = ?
+                    AND m.timeframe = '5m'
+                ORDER BY m.timestamp DESC
+                LIMIT 1
+            """
+            cursor.execute(query, (symbol,))
+            row = cursor.fetchone()
+
+            if not row:
+                continue
+
+            close = row['close']
+            sma_50 = row['sma_50']
+            rsi_14 = row['rsi_14']
+            ensemble_pct_change = row['ensemble_pct_change']
+
+            # Check for existing PENDING signals for this symbol to avoid spamming
+            cursor.execute(
+                "SELECT id FROM trade_signals WHERE symbol = ? AND status = 'PENDING' AND signal_type LIKE '%EXIT%'",
+                (symbol,)
+            )
+            if cursor.fetchone():
+                continue
+
+            exit_signal = None
+            signal_timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+            # Tier 1: Take Profit (Protect Gains)
+            if unrealized_plpc > 0.01:
+                if ensemble_pct_change < -0.4 or (sma_50 and close < sma_50):
+                    exit_signal = 'TAKE_PROFIT_EXIT'
+
+            # Tier 2: Panic Eject (Cut Losses)
+            elif unrealized_plpc < 0.0:
+                if ensemble_pct_change < -0.5 and rsi_14 and rsi_14 < 40:
+                    exit_signal = 'PANIC_EXIT'
+
+            if exit_signal:
+                print(f"🚨 {exit_signal}: {symbol} | PL: {unrealized_plpc:.2%} | AI: {ensemble_pct_change:.2f}% | RSI: {rsi_14}")
+                log_system_event("StrategyEngine", "INFO", f"{exit_signal} triggered for {symbol}. PL: {unrealized_plpc:.2%}")
+
+                cursor.execute("""
+                    INSERT INTO trade_signals
+                    (symbol, timestamp, signal_type, status, size, stop_loss, atr)
+                    VALUES (?, ?, ?, 'PENDING', 0, NULL, NULL)
+                """, (symbol, signal_timestamp, exit_signal))
+
+                cursor.connection.commit()
+
+    except Exception as e:
+        log_system_event("StrategyEngine", "ERROR", f"Error in evaluate_exits: {e}")
+
 
 def get_macro_regime(cursor):
     """
@@ -87,6 +196,9 @@ def run_strategy():
     cursor = conn.cursor()
 
     try:
+        # 0. Evaluate Exits (Proactive Risk Management)
+        evaluate_exits(cursor)
+
         # 1. Determine Global Macro Regime
         macro_regime = get_macro_regime(cursor)
 

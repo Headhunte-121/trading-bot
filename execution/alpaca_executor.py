@@ -104,7 +104,9 @@ class AlpacaExecutor:
 
     def process_sized_signals(self, conn):
         """
-        Step 1: Query 'SIZED' signals, submit Market Buy, and update to 'SUBMITTED'.
+        Step 1: Query 'SIZED' signals.
+        - If BUY/SCALP: Submit Market Buy, update to 'SUBMITTED'.
+        - If EXIT: Cancel open orders -> Market Sell -> Update to 'EXECUTED'.
         """
         if self.circuit_breaker_tripped:
             return
@@ -126,31 +128,85 @@ class AlpacaExecutor:
             for signal in signals:
                 signal_id = signal['id']
                 symbol = signal['symbol']
-                qty = float(signal['size'])  # Ensure float for flexibility (crypto support)
+                signal_type = signal['signal_type']
+                qty = float(signal['size']) if signal['size'] else 0.0
 
-                self._log("INFO", f"   -> Submitting BUY {qty} {symbol} (Market)...")
+                # --- EXIT SIGNAL LOGIC ---
+                if 'EXIT' in signal_type:
+                    self._log("INFO", f"🚨 Processing EXIT signal ({signal_type}) for {symbol}...")
 
-                # Submit Market Buy Order
-                buy_order = self._safe_api_call(
-                    self.api.submit_order,
-                    symbol=symbol,
-                    qty=qty,
-                    side='buy',
-                    type='market',
-                    time_in_force='gtc'
-                )
+                    # 1. Cancel all pending orders for this symbol (e.g., Trailing Stops)
+                    try:
+                        # list_orders supports symbols as a list in newer versions, but to be safe and compatible:
+                        orders = self._safe_api_call(self.api.list_orders, status='open')
+                        if orders:
+                            for order in orders:
+                                if order.symbol == symbol:
+                                    self._safe_api_call(self.api.cancel_order, order.id)
+                                    self._log("INFO", f"   -> Canceled open order {order.id} for {symbol}.")
+                    except Exception as e:
+                        self._log("ERROR", f"   -> Failed to cancel orders: {e}")
 
-                if buy_order:
-                    # Update status to SUBMITTED
-                    cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (buy_order.id, signal_id))
-                    conn.commit()
-                    self._log("INFO", f"   -> Signal {signal_id} ({symbol}) moved to SUBMITTED. Order ID: {buy_order.id}")
+                    # 2. Get current position size
+                    try:
+                        try:
+                            position = self._safe_api_call(self.api.get_position, symbol)
+                            current_qty = float(position.qty) if position else 0.0
+                        except Exception:
+                            # 404 if no position
+                            current_qty = 0.0
+
+                        if current_qty > 0:
+                            # 3. Submit Market Sell
+                            self._log("INFO", f"   -> Selling {current_qty} shares of {symbol} (Market)...")
+                            sell_order = self._safe_api_call(
+                                self.api.submit_order,
+                                symbol=symbol,
+                                qty=current_qty,
+                                side='sell',
+                                type='market',
+                                time_in_force='gtc'
+                            )
+
+                            if sell_order:
+                                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
+                                conn.commit()
+                                self._log("INFO", f"   -> Signal {signal_id} ({symbol}) EXECUTED (Sell Submitted).")
+                            else:
+                                self._log("ERROR", "   -> Failed to submit Sell order.")
+                        else:
+                            self._log("WARNING", f"   -> No open position for {symbol}. Marking signal as EXECUTED (Nothing to sell).")
+                            cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
+                            conn.commit()
+
+                    except Exception as e:
+                        self._log("ERROR", f"   -> Error processing Exit: {e}")
+
+                # --- BUY SIGNAL LOGIC ---
                 else:
-                    # Mark as FAILED if API call failed (unless Circuit Breaker tripped)
-                    if not self.circuit_breaker_tripped:
-                        self._log("ERROR", f"❌ Failed to submit BUY order for {symbol}.")
-                        cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                    self._log("INFO", f"   -> Submitting BUY {qty} {symbol} (Market)...")
+
+                    # Submit Market Buy Order
+                    buy_order = self._safe_api_call(
+                        self.api.submit_order,
+                        symbol=symbol,
+                        qty=qty,
+                        side='buy',
+                        type='market',
+                        time_in_force='gtc'
+                    )
+
+                    if buy_order:
+                        # Update status to SUBMITTED
+                        cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (buy_order.id, signal_id))
                         conn.commit()
+                        self._log("INFO", f"   -> Signal {signal_id} ({symbol}) moved to SUBMITTED. Order ID: {buy_order.id}")
+                    else:
+                        # Mark as FAILED if API call failed (unless Circuit Breaker tripped)
+                        if not self.circuit_breaker_tripped:
+                            self._log("ERROR", f"❌ Failed to submit BUY order for {symbol}.")
+                            cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                            conn.commit()
 
         except Exception as e:
             self._log("ERROR", f"Error in process_sized_signals: {e}")
