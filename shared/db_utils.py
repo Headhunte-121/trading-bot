@@ -17,7 +17,7 @@ DB_NAME = "trade_history.db"
 DB_PATH = os.path.join(DATA_DIR, DB_NAME)
 
 
-def get_db_connection(db_path=None, timeout=60.0):
+def get_db_connection(db_path=None, timeout=60.0, log_error=True):
     """
     Establishes a connection to the SQLite database with configured timeout and journal mode.
     Implements a retry mechanism for transient errors (e.g., locking).
@@ -25,6 +25,7 @@ def get_db_connection(db_path=None, timeout=60.0):
     Args:
         db_path (str, optional): Path to the database file. Defaults to shared.db_utils.DB_PATH.
         timeout (float): Timeout in seconds for waiting for the database lock.
+        log_error (bool): Whether to log connection errors to stderr. Defaults to True.
 
     Returns:
         sqlite3.Connection: A connection object, or None if connection fails.
@@ -56,11 +57,13 @@ def get_db_connection(db_path=None, timeout=60.0):
                 time.sleep(retry_delay)
                 continue
             else:
-                print(f"[ERROR] Failed to connect to database at {db_path} after {max_retries} attempts: {e}", file=sys.stderr)
+                if log_error:
+                    print(f"[ERROR] Failed to connect to database at {db_path} after {max_retries} attempts: {e}", file=sys.stderr)
                 return None
         except sqlite3.Error as e:
             # Non-recoverable error
-            print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
+            if log_error:
+                print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
             return None
 
     return None
