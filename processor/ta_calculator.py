@@ -1,11 +1,13 @@
+"""
+Service: Technical Analysis Calculator
+Role: Computes real-time technical indicators (SMA, RSI, VWAP, ATR, etc.) for tracked symbols.
+Dependencies: pandas, pandas_ta, sqlite3, shared.db_utils
+"""
 import pandas as pd
 import pandas_ta as ta
-import sqlite3
 import os
 import sys
-import time
 from datetime import datetime, timezone
-import numpy as np
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,22 +15,28 @@ from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
+
 class TACalculator:
+    """
+    Service class responsible for calculating technical indicators.
+    """
     def __init__(self):
         # Cache for Daily SMA 200: {symbol: {'date': 'YYYY-MM-DD', 'value': float}}
         self._daily_cache = {}
         self.conn = None
 
     def get_connection(self):
+        """Returns the active database connection, creating one if necessary."""
         if self.conn is None:
             self.conn = get_db_connection()
         return self.conn
 
     def close_connection(self):
+        """Closes the active database connection."""
         if self.conn:
             try:
                 self.conn.close()
-            except:
+            except Exception:
                 pass
             self.conn = None
 
@@ -36,6 +44,12 @@ class TACalculator:
         """
         Fetches or calculates the latest Daily SMA 200 for a symbol.
         Uses an in-memory cache to avoid re-querying daily data within the same trading day.
+
+        Args:
+            symbol (str): Ticker symbol.
+
+        Returns:
+            float: The SMA 200 value or None if insufficient data.
         """
         today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
@@ -79,6 +93,18 @@ class TACalculator:
     def process_symbol(self, symbol):
         """
         Calculates intraday indicators for a symbol and returns a DataFrame of results.
+
+        Logic:
+        1. Fetches recent 5m market data.
+        2. Computes indicators (RSI, SMA, ATR, VWAP, BB) using pandas-ta.
+        3. Filters for the current day only to avoid rewriting history.
+        4. Merges cached Daily SMA 200.
+
+        Args:
+            symbol (str): Ticker symbol.
+
+        Returns:
+            pd.DataFrame: DataFrame containing calculated indicators.
         """
         try:
             # 1. Get Daily SMA 200 (Cached)
@@ -121,9 +147,9 @@ class TACalculator:
             # VWAP
             vwap = df.ta.vwap(anchor='D')
             if isinstance(vwap, pd.DataFrame):
-                 df['vwap'] = vwap.iloc[:, 0]
+                df['vwap'] = vwap.iloc[:, 0]
             else:
-                 df['vwap'] = vwap
+                df['vwap'] = vwap
 
             # Bollinger Bands (20, 2)
             bb = df.ta.bbands(length=20, std=2, close='close')
@@ -173,6 +199,7 @@ class TACalculator:
             return None
 
     def run(self):
+        """Main execution cycle."""
         # Ensure connection
         self.get_connection()
 
@@ -208,6 +235,7 @@ class TACalculator:
             log_system_event("TA_Calculator", "ERROR", f"Critical Error: {str(e)}")
         finally:
             self.close_connection()
+
 
 if __name__ == "__main__":
     calc = TACalculator()

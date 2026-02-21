@@ -1,30 +1,40 @@
+"""
+Service: Swarm Intelligence Brain (Predictive Engine)
+Role: Runs an ensemble of Chronos T5 models (Small + Large) to forecast future price movements.
+Dependencies: torch, pandas, chronos, shared.db_utils
+"""
 import os
 import sys
-import time
 import torch
 import pandas as pd
-import numpy as np
-import sqlite3
 from chronos import ChronosPipeline
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.db_utils import get_db_connection
+from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
 MODEL_SMALL = "amazon/chronos-t5-small"
 MODEL_LARGE = "amazon/chronos-t5-large"
 
+
 def get_device():
+    """Detects and returns the optimal computation device (CUDA/CPU)."""
     if torch.cuda.is_available():
         print(f"🚀 GPU DETECTED: {torch.cuda.get_device_name(0)}")
         return "cuda"
     print("⚠️ No GPU detected. Using CPU (Slow).")
     return "cpu"
 
+
 def load_models():
-    """Loads both Small and Large Chronos models."""
+    """
+    Loads both Small and Large Chronos models for the ensemble.
+
+    Returns:
+        tuple: (pipeline_small, pipeline_large)
+    """
     print(f"Loading Ensemble: {MODEL_SMALL} + {MODEL_LARGE}...")
     device = get_device()
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -47,25 +57,30 @@ def load_models():
 
     return pipeline_small, pipeline_large
 
+
 def fetch_context_data(conn):
     """
-    Fetches the last 64 closing prices for all symbols.
+    Fetches the last 64 closing prices for all tracked symbols to build the context tensor.
+
+    Args:
+        conn: Database connection object.
+
     Returns:
-        contexts (list of tensors): List of 1D tensors, one per symbol.
-        valid_symbols (list of str): List of symbols that had valid data.
-        last_prices (list of float): List of the most recent close price for each valid symbol.
-        timestamps (list of str): List of the most recent timestamp for each valid symbol.
+        tuple: (contexts, valid_symbols, last_prices, timestamps)
+            - contexts: List of 1D tensors (float32), one per symbol.
+            - valid_symbols: List of symbol strings.
+            - last_prices: List of the most recent close prices (float).
+            - timestamps: List of the most recent timestamps (str).
     """
     contexts = []
     valid_symbols = []
     last_prices = []
     timestamps = []
 
-    cursor = conn.cursor()
-
     for symbol in SYMBOLS:
         try:
-            # Fetch last 64 candles (5m)
+            # Fetch last 64 candles (5m timeframe)
+            # We need a fixed context window for the transformer model.
             query = """
                 SELECT timestamp, close
                 FROM market_data
@@ -78,17 +93,20 @@ def fetch_context_data(conn):
             if df.empty or len(df) < 10:
                 continue
 
-            # Sort chronological (ASC)
+            # Sort chronologically (ASC) because the model expects time-series data
             df = df.sort_values(by='timestamp', ascending=True)
 
-            # Check for NaNs and fill
+            # Data Cleaning: Forward Fill then Backward Fill
+            # Transformer models cannot handle NaNs. We use forward fill to propagate
+            # the last known price, then backward fill for any initial gaps.
             if df['close'].isnull().any():
                 df['close'] = df['close'].ffill().bfill()
 
             if df['close'].isnull().any():
                 continue
 
-            # Convert to tensor
+            # Convert to Tensor
+            # The Chronos model expects a 1D tensor of float values as input context.
             prices = df['close'].values
             context_tensor = torch.tensor(prices, dtype=torch.float32)
 
@@ -103,8 +121,19 @@ def fetch_context_data(conn):
 
     return contexts, valid_symbols, last_prices, timestamps
 
+
 def run_predictions(pipeline_small, pipeline_large):
+    """
+    Executes the inference cycle:
+    1. Fetches market context.
+    2. Runs inference on both Small and Large models.
+    3. Calculates an Ensemble prediction (Weighted Average).
+    4. Saves results to the database.
+    """
     conn = get_db_connection()
+    if not conn:
+        return
+
     try:
         print("🔮 Fetching market context for Ensemble Inference...")
         contexts, symbols, last_prices, timestamps = fetch_context_data(conn)
@@ -116,23 +145,25 @@ def run_predictions(pipeline_small, pipeline_large):
         print(f"🧠 Running Ensemble on {len(contexts)} symbols...")
 
         # --- SMALL MODEL INFERENCE ---
+        # Chronos-Small is faster but less nuanced. Used for "gut check".
         print(f"   Running {MODEL_SMALL}...")
         forecasts_small = pipeline_small.predict(
-            contexts, # Positional argument
-            prediction_length=6,
-            num_samples=20
+            contexts,
+            prediction_length=6,  # Forecast 6 steps (30 mins at 5m intervals)
+            num_samples=20        # Monte Carlo samples for probabilistic forecast
         )
-        # Extract mean of 6th step
+        # Extract mean of the 6th step (T+30)
+        # We use the median of the samples to be robust against outliers.
         preds_small = torch.median(forecasts_small[:, :, 5], dim=1).values.tolist()
 
         # --- LARGE MODEL INFERENCE ---
+        # Chronos-Large has deeper context understanding but is slower.
         print(f"   Running {MODEL_LARGE}...")
         forecasts_large = pipeline_large.predict(
-            contexts, # Positional argument
+            contexts,
             prediction_length=6,
             num_samples=20
         )
-        # Extract mean of 6th step
         preds_large = torch.median(forecasts_large[:, :, 5], dim=1).values.tolist()
 
         results = []
@@ -143,7 +174,10 @@ def run_predictions(pipeline_small, pipeline_large):
             p_small = preds_small[i]
             p_large = preds_large[i]
 
-            # Ensemble Logic: 0.7 * Large + 0.3 * Small
+            # --- ENSEMBLE LOGIC ---
+            # Weighted Average: 70% Large Model, 30% Small Model.
+            # Rationale: The Large model generally provides higher accuracy for
+            # complex patterns, while the Small model adds a layer of variance reduction.
             ensemble_price = (0.7 * p_large) + (0.3 * p_small)
 
             if current_price == 0:
@@ -161,6 +195,7 @@ def run_predictions(pipeline_small, pipeline_large):
                 ensemble_pct
             ))
 
+            # Only log significant predictions to keep console clean
             if ensemble_pct > 0.4:
                 print(f"   -> {symbol}: {current_price:.2f} -> ENS: {ensemble_price:.2f} ({ensemble_pct:+.2f}%) | S: {p_small:.2f} L: {p_large:.2f}")
 
@@ -179,15 +214,17 @@ def run_predictions(pipeline_small, pipeline_large):
         print(f"❌ Ensemble Engine Error: {e}")
         import traceback
         traceback.print_exc()
+        log_system_event("PredictiveEngine", "ERROR", f"Inference Error: {str(e)}")
     finally:
         conn.close()
 
+
 if __name__ == "__main__":
-    p_small, p_large = load_models()
+    p_small_model, p_large_model = load_models()
 
     while True:
-        run_predictions(p_small, p_large)
+        run_predictions(p_small_model, p_large_model)
 
-        sleep_sec = get_sleep_seconds()
-        print(f"💤 Sleeping for {sleep_sec} seconds...")
-        smart_sleep(sleep_sec)
+        sleep_duration = get_sleep_seconds()
+        print(f"💤 Sleeping for {sleep_duration} seconds...")
+        smart_sleep(sleep_duration)

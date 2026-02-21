@@ -1,12 +1,16 @@
+"""
+Service: Smart Sleep Mechanism
+Role: dynamic sleep intervals based on market hours and system power mode.
+Dependencies: time, datetime, zoneinfo, shared.db_utils
+"""
 import time
 import sys
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Fallback for older python versions if needed, though 3.12 has it.
     from backports.zoneinfo import ZoneInfo
 
 # Ensure shared package is available if run directly
@@ -21,13 +25,24 @@ MARKET_CLOSE_MINUTE = 0  # 16:00:00 exactly
 SLEEP_ACTIVE = 300
 SLEEP_PASSIVE = 3600
 
+
 def get_config_value(key, default):
     """
     Retrieves a configuration value from the database with a short timeout.
+
+    Args:
+        key (str): The configuration key to retrieve.
+        default (any): The default value if key is not found or error occurs.
+
+    Returns:
+        any: The configuration value or default.
     """
     conn = None
     try:
-        conn = get_db_connection(timeout=1.0) # Short timeout
+        conn = get_db_connection(timeout=1.0)  # Short timeout
+        if conn is None:
+            return default
+
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
         row = cursor.fetchone()
@@ -42,14 +57,21 @@ def get_config_value(key, default):
         return default
     finally:
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 def get_market_status():
     """
-    Returns a dictionary with status details:
-    - 'is_open': bool
-    - 'status_message': str
-    - 'sleep_seconds': int
+    Determines the current market status and appropriate sleep duration.
+
+    Returns:
+        dict: A dictionary containing:
+            - 'is_open' (bool): Whether the market is currently open.
+            - 'status_message' (str): A descriptive status message.
+            - 'sleep_seconds' (int): The recommended sleep duration in seconds.
     """
     try:
         # Check System Config Override
@@ -62,7 +84,7 @@ def get_market_status():
                 'sleep_seconds': SLEEP_ACTIVE
             }
         elif sleep_mode == "FORCE_SLEEP":
-             return {
+            return {
                 'is_open': False,
                 'status_message': "🌙 Force Sleep - Sleep Mode (1h)",
                 'sleep_seconds': SLEEP_PASSIVE
@@ -115,21 +137,33 @@ def get_market_status():
             'sleep_seconds': SLEEP_PASSIVE
         }
 
+
 def get_sleep_seconds():
-    """Returns the sleep duration in seconds based on market status."""
+    """
+    Returns the sleep duration in seconds based on market status.
+
+    Returns:
+        int: Sleep duration in seconds.
+    """
     return get_market_status()['sleep_seconds']
+
 
 def smart_sleep(seconds):
     """
     Sleeps for the specified duration but checks for 'FORCE_AWAKE' every second.
     If 'FORCE_AWAKE' is detected, it wakes up immediately.
+
+    Args:
+        seconds (int): Total seconds to sleep.
     """
+    # Cast to int to ensure range works
     for _ in range(int(seconds)):
         sleep_mode = get_config_value("sleep_mode", "AUTO")
         if sleep_mode == "FORCE_AWAKE":
             print("⚡ Force Awake Detected! Waking up...")
             return
         time.sleep(1)
+
 
 if __name__ == "__main__":
     status = get_market_status()

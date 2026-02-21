@@ -1,3 +1,8 @@
+"""
+Service: Dashboard (Streamlit App)
+Role: Visualization layer for the Deep Quant Terminal.
+Dependencies: streamlit, plotly, dashboard.data_manager, shared.smart_sleep
+"""
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -41,6 +46,7 @@ st.set_page_config(
     page_icon="🧬"
 )
 
+
 # --- Utilities ---
 def load_css(file_path):
     """Loads custom CSS from a file."""
@@ -48,8 +54,8 @@ def load_css(file_path):
         with open(file_path) as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# --- Renderers ---
 
+# --- Renderers ---
 def render_sidebar():
     """Renders the sidebar with system status and controls."""
     st.sidebar.markdown("## 🧬 QUANT TERMINAL")
@@ -121,13 +127,14 @@ def render_sidebar():
 
         # Ensure selected symbol is valid
         if st.session_state.selected_symbol not in symbol_list:
-             st.session_state.selected_symbol = symbol_list[0]
+            st.session_state.selected_symbol = symbol_list[0]
 
         st.session_state.selected_symbol = st.sidebar.selectbox(
             "ASSET FOCUS",
             symbol_list,
             index=symbol_list.index(st.session_state.selected_symbol)
         )
+
 
 def render_ticker_tape():
     """Renders the horizontal ticker tape at the top."""
@@ -153,6 +160,7 @@ def render_ticker_tape():
 </div>
 """
         st.markdown(full_html, unsafe_allow_html=True)
+
 
 def render_radar(df):
     """Renders the Prediction Radar using AgGrid."""
@@ -215,7 +223,7 @@ def render_radar(df):
 
         # Robust selection handling
         if selected_rows is not None:
-             # Check if it's a DataFrame (newer AgGrid versions)
+            # Check if it's a DataFrame (newer AgGrid versions)
             if isinstance(selected_rows, pd.DataFrame):
                 if not selected_rows.empty:
                     selected_ticker = selected_rows.iloc[0]['symbol']
@@ -231,6 +239,7 @@ def render_radar(df):
 
     else:
         st.info("No predictions available.")
+
 
 def render_chart(symbol, radar_df):
     """Renders the main price chart with Plotly."""
@@ -327,6 +336,7 @@ def render_chart(symbol, radar_df):
 
     st.plotly_chart(fig, config={'displayModeBar': False})
 
+
 def render_heatmap():
     """Renders the RSI Heatmap using AgGrid."""
     st.markdown("### 🔥 RSI HEATMAP")
@@ -364,19 +374,20 @@ def render_heatmap():
         selected_rows = grid_response['selected_rows']
 
         if selected_rows is not None:
-             if isinstance(selected_rows, pd.DataFrame):
+            if isinstance(selected_rows, pd.DataFrame):
                 if not selected_rows.empty:
                     selected_ticker = selected_rows.iloc[0]['symbol']
                     if selected_ticker != st.session_state.selected_symbol:
                         st.session_state.selected_symbol = selected_ticker
                         st.rerun()
-             elif isinstance(selected_rows, list) and len(selected_rows) > 0:
+            elif isinstance(selected_rows, list) and len(selected_rows) > 0:
                 selected_ticker = selected_rows[0].get('symbol')
                 if selected_ticker and selected_ticker != st.session_state.selected_symbol:
                     st.session_state.selected_symbol = selected_ticker
                     st.rerun()
     else:
         st.info("No technical data.")
+
 
 def render_logs():
     """Renders system logs in a terminal-like window."""
@@ -388,14 +399,16 @@ def render_logs():
 
     if not logs.empty:
         for _, row in logs.iterrows():
-            color = "#00FF00" # Default info
-            if row['log_level'] == 'ERROR': color = "#FF1744"
-            if row['log_level'] == 'WARNING': color = "#FFC400"
+            color = "#00FF00"  # Default info
+            if row['log_level'] == 'ERROR':
+                color = "#FF1744"
+            if row['log_level'] == 'WARNING':
+                color = "#FFC400"
 
             try:
                 # Extract HH:MM:SS from ISO timestamp
                 ts = row['timestamp'].split('T')[1].split('.')[0]
-            except:
+            except Exception:
                 ts = row['timestamp']
 
             html_content.append(f"<div style='color: {color};'>[{ts}] [{row['service_name']}] {row['message']}</div>")
@@ -405,6 +418,7 @@ def render_logs():
     html_content.append("</div>")
 
     st.markdown("".join(html_content), unsafe_allow_html=True)
+
 
 # --- Main Layout ---
 def main():
@@ -419,7 +433,7 @@ def main():
 
     # Quad Layout
     # Row 1
-    c1, c2 = st.columns([4, 6]) # 40% / 60% split
+    c1, c2 = st.columns([4, 6])  # 40% / 60% split
 
     radar_data = DataManager.get_ensemble_radar()
 
@@ -450,6 +464,7 @@ def main():
 
         with tab3:
             render_logs()
+
 
 if __name__ == "__main__":
     main()

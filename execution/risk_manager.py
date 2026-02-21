@@ -1,15 +1,21 @@
+"""
+Service: Risk Manager
+Role: Validates trade signals and calculates position sizing based on risk parameters.
+Dependencies: sqlite3, shared.db_utils, shared.config
+"""
 import sqlite3
 import os
 import math
 import sys
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from datetime import datetime, timezone
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
+
 
 @dataclass
 class RiskConfig:
@@ -27,18 +33,23 @@ class RiskConfig:
             max_signal_age_minutes=int(os.getenv("MAX_SIGNAL_AGE_MINUTES", 60))
         )
 
+
 # Global config instance for module-level access (backward compatibility)
 _CONFIG = RiskConfig.from_env()
+
 
 def calculate_position_size(close_price: float, account_size: float = None, risk_pct: float = None) -> int:
     """
     Calculates the position size (number of shares).
-    Logic: Position Value = Account Size * Risk %
+
+    Logic:
+    Position Value = Account Size * Risk %
+    Shares = floor(Position Value / Close Price)
 
     Args:
-        close_price: The current price of the asset.
-        account_size: Account equity (defaults to global config).
-        risk_pct: Risk percentage per trade (defaults to global config).
+        close_price (float): The current price of the asset.
+        account_size (float): Account equity (defaults to global config).
+        risk_pct (float): Risk percentage per trade (defaults to global config).
 
     Returns:
         int: Number of shares to buy (floor). Returns 0 if price <= 0.
@@ -54,9 +65,10 @@ def calculate_position_size(close_price: float, account_size: float = None, risk
     target_position_value = account_size * risk_pct
     return math.floor(target_position_value / close_price)
 
+
 class RiskManager:
     """
-    Manages risk by sizing pending trade signals.
+    Manages risk by sizing pending trade signals and filtering out stale ones.
     """
     def __init__(self):
         self.config = RiskConfig.from_env()
@@ -67,11 +79,14 @@ class RiskManager:
         Fetches pending signals, calculates sizes, and updates them in batch.
         """
         conn = get_db_connection()
+        if not conn:
+            return
+
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         try:
-            # optimize: select specific columns
+            # Optimize: select specific columns
             query = """
                 SELECT ts.id, ts.symbol, ts.timestamp, md.close
                 FROM trade_signals ts
@@ -162,10 +177,12 @@ class RiskManager:
             print(f"💤 {self.service_name} Sleeping for {sleep_sec} seconds...")
             smart_sleep(sleep_sec)
 
+
 # Backward compatibility wrapper for testing or legacy calls
 def run_risk_manager():
     manager = RiskManager()
     manager.process_pending_signals()
+
 
 if __name__ == "__main__":
     RiskManager().run()

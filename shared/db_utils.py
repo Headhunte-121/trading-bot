@@ -1,6 +1,12 @@
+"""
+Service: Shared Utilities
+Role: Provides core database connectivity and system logging for the Deep Quant Terminal.
+Dependencies: sqlite3, os, sys, datetime
+"""
 import sqlite3
 import os
 import sys
+import datetime
 
 # Define the path to the database
 # Using absolute path resolution relative to this file
@@ -8,6 +14,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_NAME = "trade_history.db"
 DB_PATH = os.path.join(DATA_DIR, DB_NAME)
+
 
 def get_db_connection(db_path=None, timeout=60.0):
     """
@@ -18,7 +25,7 @@ def get_db_connection(db_path=None, timeout=60.0):
         timeout (float): Timeout in seconds for waiting for the database lock.
 
     Returns:
-        sqlite3.Connection: A connection object.
+        sqlite3.Connection: A connection object, or None if connection fails.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -40,6 +47,7 @@ def get_db_connection(db_path=None, timeout=60.0):
     except sqlite3.Error as e:
         print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
         return None
+
 
 def execute_query(query, params=(), db_path=None):
     """
@@ -67,6 +75,7 @@ def execute_query(query, params=(), db_path=None):
             return []
     return []
 
+
 def log_system_event(service_name, log_level, message):
     """
     Logs a system event to the database.
@@ -76,8 +85,6 @@ def log_system_event(service_name, log_level, message):
         log_level (str): Level of the log (e.g., "INFO", "ERROR").
         message (str): The message content.
     """
-    import datetime
-
     try:
         conn = get_db_connection()
         if conn:

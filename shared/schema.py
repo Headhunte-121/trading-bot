@@ -1,6 +1,12 @@
+"""
+Service: Database Schema Management
+Role: Manages database initialization, table creation, and schema migrations.
+Dependencies: sqlite3, shared.db_utils
+"""
 import sqlite3
 import os
 import sys
+import re
 
 # Ensure shared package is available if run directly
 if __name__ == "__main__":
@@ -8,28 +14,67 @@ if __name__ == "__main__":
 
 from shared.db_utils import get_db_connection, DB_PATH
 
+
+def _is_safe_identifier(identifier):
+    """
+    Validates that an identifier contains only alphanumeric characters and underscores.
+    """
+    return bool(re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", identifier))
+
+
+def _is_safe_definition(definition):
+    """
+    Validates that a column definition does not contain dangerous SQL characters.
+    """
+    # Simple blacklist for basic SQL injection prevention in definitions
+    unsafe_chars = [";", "--", "/*"]
+    return not any(char in definition for char in unsafe_chars)
+
+
 def add_column_if_not_exists(cursor, table, column, definition):
+    """
+    Adds a column to a table if it does not already exist.
+
+    Args:
+        cursor: SQLite cursor object.
+        table (str): Table name.
+        column (str): Column name.
+        definition (str): Column definition (e.g., "REAL", "TEXT").
+    """
+    if not _is_safe_identifier(table) or not _is_safe_identifier(column):
+        print(f"Error: Invalid identifier '{table}' or '{column}'.")
+        return
+
+    if not _is_safe_definition(definition):
+        print(f"Error: Invalid definition '{definition}'.")
+        return
+
     try:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         print(f"Added column '{column}' to table '{table}'.")
     except sqlite3.OperationalError as e:
         if "duplicate column name" in str(e):
-            print(f"Column '{column}' already exists in table '{table}'.")
+            pass  # Column already exists
         else:
             print(f"Error adding column '{column}' to table '{table}': {e}")
+
 
 def setup_database():
     """Initializes the database and creates tables if they do not exist."""
     print(f"Setting up database at {DB_PATH}...")
 
     conn = get_db_connection()
+    if not conn:
+        return
+
     cursor = conn.cursor()
 
-    # --- DROP LEGACY TABLES ---
-    tables_to_drop = ["raw_news", "market_data_daily", "chart_analysis_requests"]
-    for table in tables_to_drop:
-        cursor.execute(f"DROP TABLE IF EXISTS {table}")
-        print(f"Dropped legacy table: {table}")
+    # --- DROP DEPRECATED TABLES ---
+    deprecated_tables = ["raw_news", "market_data_daily", "chart_analysis_requests"]
+    for table in deprecated_tables:
+        if _is_safe_identifier(table):
+            cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            print(f"Dropped deprecated table: {table}")
 
     # --- MARKET DATA ---
     cursor.execute("""
@@ -46,7 +91,8 @@ def setup_database():
         )
     """)
 
-    # --- TECHNICAL INDICATORS (Recreated with timeframe & new indicators) ---
+    # --- TECHNICAL INDICATORS ---
+    # Recreate to ensure schema consistency
     cursor.execute("DROP TABLE IF EXISTS technical_indicators")
     cursor.execute("""
         CREATE TABLE technical_indicators (
@@ -63,10 +109,9 @@ def setup_database():
             PRIMARY KEY (symbol, timestamp, timeframe)
         )
     """)
-    print("Recreated technical_indicators table with new columns.")
+    print("Recreated technical_indicators table.")
 
     # --- AI PREDICTIONS ---
-    # We keep the existing table if it exists, assuming schema is stable
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +139,6 @@ def setup_database():
             order_id TEXT
         )
     """)
-    # Add new column 'atr' to trade_signals
     add_column_if_not_exists(cursor, "trade_signals", "atr", "REAL")
 
     # --- EXECUTED TRADES ---
@@ -108,7 +152,6 @@ def setup_database():
             side TEXT
         )
     """)
-    # Add new column 'signal_type' to executed_trades
     add_column_if_not_exists(cursor, "executed_trades", "signal_type", "TEXT")
 
     # --- SYSTEM LOGS ---
@@ -131,11 +174,11 @@ def setup_database():
     """)
     # Initialize default configuration
     cursor.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('sleep_mode', 'AUTO')")
-    print("System config table created and initialized.")
 
     conn.commit()
     conn.close()
     print("Database setup complete.")
+
 
 if __name__ == "__main__":
     setup_database()
