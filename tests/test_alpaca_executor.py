@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 import os
 import sys
 
@@ -7,14 +7,11 @@ import sys
 mock_alpaca = MagicMock()
 sys.modules["alpaca_trade_api"] = mock_alpaca
 sys.modules["alpaca_trade_api.rest"] = mock_alpaca.rest
-# We want to be able to patch REST in execution.alpaca_executor
-# So we need to make sure that when 'from alpaca_trade_api.rest import REST' is called,
-# it gets something we can track or patch.
 
 # Ensure the project root is in sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from execution.alpaca_executor import get_alpaca_api
+from execution.alpaca_executor import get_alpaca_api, process_sized_signals, process_submitted_signals
 
 class TestAlpacaExecutor(unittest.TestCase):
 
@@ -77,6 +74,126 @@ class TestAlpacaExecutor(unittest.TestCase):
 
         # Assertions
         self.assertIsNone(api)
+
+    def test_process_sized_signals_success(self):
+        # Mock API
+        mock_api = MagicMock()
+        mock_order = MagicMock()
+        mock_order.id = "order_123"
+        mock_api.submit_order.return_value = mock_order
+
+        # Mock DB
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        # Setup mock data
+        mock_cursor.fetchall.return_value = [
+            {'id': 1, 'symbol': 'AAPL', 'size': 10, 'signal_type': 'TREND_BUY'}
+        ]
+
+        # Call function
+        process_sized_signals(mock_api, mock_conn)
+
+        # Assertions
+        mock_cursor.execute.assert_any_call("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", ("order_123", 1))
+        mock_api.submit_order.assert_called_with(
+            symbol='AAPL', qty=10, side='buy', type='market', time_in_force='gtc'
+        )
+
+    def test_process_sized_signals_failure(self):
+        # Mock API
+        mock_api = MagicMock()
+        mock_api.submit_order.side_effect = Exception("API Error")
+
+        # Mock DB
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchall.return_value = [
+            {'id': 1, 'symbol': 'AAPL', 'size': 10, 'signal_type': 'TREND_BUY'}
+        ]
+
+        # Call function
+        process_sized_signals(mock_api, mock_conn)
+
+        # Assertions
+        mock_cursor.execute.assert_any_call("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (1,))
+
+    def test_process_submitted_signals_filled(self):
+        # Mock API
+        mock_api = MagicMock()
+        mock_order = MagicMock()
+        mock_order.status = 'filled'
+        mock_order.filled_qty = '10'
+        mock_order.filled_avg_price = '150.0'
+        mock_api.get_order.return_value = mock_order
+
+        mock_stop_order = MagicMock()
+        mock_stop_order.id = "stop_123"
+        mock_api.submit_order.return_value = mock_stop_order
+
+        # Mock DB
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchall.return_value = [
+            {'id': 1, 'symbol': 'AAPL', 'order_id': 'order_123', 'signal_type': 'TREND_BUY', 'atr': 2.0}
+        ]
+
+        # Call function
+        process_submitted_signals(mock_api, mock_conn)
+
+        # Assertions
+        # Check if trade logged (this logic is inside log_trade, verify execute call)
+        # Check if trailing stop submitted
+        mock_api.submit_order.assert_called()
+        # Check status update
+        mock_cursor.execute.assert_any_call("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (1,))
+
+    def test_process_submitted_signals_canceled(self):
+        # Mock API
+        mock_api = MagicMock()
+        mock_order = MagicMock()
+        mock_order.status = 'canceled'
+        mock_api.get_order.return_value = mock_order
+
+        # Mock DB
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchall.return_value = [
+            {'id': 1, 'symbol': 'AAPL', 'order_id': 'order_123', 'signal_type': 'TREND_BUY', 'atr': 2.0}
+        ]
+
+        # Call function
+        process_submitted_signals(mock_api, mock_conn)
+
+        # Assertions
+        mock_cursor.execute.assert_any_call("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (1,))
+
+    def test_process_submitted_signals_partial(self):
+        # Mock API
+        mock_api = MagicMock()
+        mock_order = MagicMock()
+        mock_order.status = 'partially_filled'
+        mock_api.get_order.return_value = mock_order
+
+        # Mock DB
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchall.return_value = [
+            {'id': 1, 'symbol': 'AAPL', 'order_id': 'order_123', 'signal_type': 'TREND_BUY', 'atr': 2.0}
+        ]
+
+        # Call function
+        process_submitted_signals(mock_api, mock_conn)
+
+        # Assertions
+        calls = mock_cursor.execute.call_args_list
+        update_calls = [c for c in calls if "UPDATE trade_signals" in c[0][0]]
+        self.assertEqual(len(update_calls), 0)
 
 if __name__ == '__main__':
     unittest.main()

@@ -11,8 +11,6 @@ from shared.db_utils import get_db_connection
 from shared.smart_sleep import get_sleep_seconds
 
 TRAIL_PERCENT_DEFAULT = 2.0
-MAX_FILL_RETRIES = 10
-FILL_POLL_INTERVAL = 1.0
 
 def get_alpaca_api():
     api_key = os.getenv("APCA_API_KEY_ID")
@@ -41,18 +39,15 @@ def log_trade(conn, symbol, price, qty, side, timestamp_str, signal_type):
     except Exception as e:
         print(f"Failed to log trade: {e}")
 
-def process_signals(api):
+def process_sized_signals(api, conn):
     """
-    Reads SIZED signals, submits Market Buy, waits for fill, submits Trailing Stop Sell.
+    Step 1: Query 'SIZED' signals, submit Market Buy, and update to 'SUBMITTED'.
+    Does NOT wait for fill.
     """
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-
     try:
-        # Get SIZED signals with ATR and Signal Type
         cursor.execute("""
-            SELECT id, symbol, size, signal_type, atr
+            SELECT id, symbol, size, signal_type
             FROM trade_signals
             WHERE status = 'SIZED'
         """)
@@ -61,74 +56,89 @@ def process_signals(api):
         if not signals:
             return
 
-        print(f"🚀 Processing {len(signals)} new signals...")
+        print(f"🚀 Processing {len(signals)} new SIZED signals...")
 
         for signal in signals:
             signal_id = signal['id']
             symbol = signal['symbol']
             qty = int(signal['size'])
+
+            try:
+                print(f"   -> Submitting BUY {qty} {symbol} (Market)...")
+                buy_order = api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc'
+                )
+                
+                # CRITICAL: Do NOT wait for fill.
+                # Update status to SUBMITTED and save order_id
+                cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (buy_order.id, signal_id))
+                conn.commit()
+                print(f"   -> Signal {signal_id} ({symbol}) moved to SUBMITTED. Order ID: {buy_order.id}")
+
+            except Exception as e:
+                print(f"❌ Failed to submit BUY order for {symbol}: {e}")
+                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                conn.commit()
+
+    except Exception as e:
+        print(f"Error in process_sized_signals: {e}")
+
+def process_submitted_signals(api, conn):
+    """
+    Step 2: Monitor 'SUBMITTED' signals.
+    - If filled: Submit Trailing Stop, log trade, update to 'EXECUTED'.
+    - If canceled/rejected/expired: Update to 'FAILED'.
+    - If new/accepted/partially_filled: Do nothing.
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT id, symbol, order_id, signal_type, atr
+            FROM trade_signals
+            WHERE status = 'SUBMITTED'
+        """)
+        signals = cursor.fetchall()
+
+        if not signals:
+            return
+
+        for signal in signals:
+            signal_id = signal['id']
+            symbol = signal['symbol']
+            order_id = signal['order_id']
             signal_type = signal['signal_type']
             atr = signal['atr']
 
-            try:
-                # 1. Submit Market Buy Order
-                print(f"   -> Submitting BUY {qty} {symbol} (Market)...")
-                try:
-                    buy_order = api.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side='buy',
-                        type='market',
-                        time_in_force='gtc'
-                    )
-                except Exception as e:
-                    print(f"❌ Failed to submit BUY order for {symbol}: {e}")
-                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
-                    conn.commit()
-                    continue
-                
-                # Update status to SUBMITTED to track progress
-                cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (buy_order.id, signal_id))
+            if not order_id:
+                print(f"⚠️ Signal {signal_id} ({symbol}) is SUBMITTED but has no order_id. Marking FAILED.")
+                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
                 conn.commit()
+                continue
 
-                # 2. Wait for Fill
-                filled_qty = 0
-                avg_price = 0.0
-                filled = False
+            try:
+                order_status = api.get_order(order_id)
+                status = order_status.status
 
-                for attempt in range(MAX_FILL_RETRIES):
-                    try:
-                        # Poll order status
-                        order_status = api.get_order(buy_order.id)
-                        if order_status.status == 'filled':
-                            filled_qty = float(order_status.filled_qty)
-                            avg_price = float(order_status.filled_avg_price) if order_status.filled_avg_price else 0.0
-                            filled = True
-                            break
-                        elif order_status.status in ['canceled', 'rejected', 'expired']:
-                            print(f"❌ Order {buy_order.id} was {order_status.status}.")
-                            cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
-                            conn.commit()
-                            break
-                    except Exception as e:
-                        print(f"⚠️ Error polling order {buy_order.id}: {e}")
+                if status == 'filled':
+                    filled_qty = float(order_status.filled_qty)
+                    avg_price = float(order_status.filled_avg_price) if order_status.filled_avg_price else 0.0
 
-                    time.sleep(FILL_POLL_INTERVAL)
-
-                if filled and filled_qty > 0:
-                    print(f"✅ Order filled: {filled_qty} shares @ {avg_price:.2f}")
+                    print(f"✅ Order {order_id} ({symbol}) FILLED: {filled_qty} @ {avg_price:.2f}")
 
                     # Log execution
                     ts_iso = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                     log_trade(conn, symbol, avg_price, filled_qty, 'buy', ts_iso, signal_type)
 
-                    # 3. Submit Trailing Stop Sell
-                    # Determine Trailing Stop Parameter (Price vs Percent)
+                    # Submit Trailing Stop
                     trail_price = None
                     trail_percent = None
 
                     if atr is not None and signal_type:
-                        multiplier = 2.0 # Default fallback within ATR logic
+                        multiplier = 2.0
                         if signal_type == 'VWAP_SCALP':
                             multiplier = 1.5
                         elif signal_type == 'DEEP_VALUE_BUY':
@@ -142,9 +152,8 @@ def process_signals(api):
                         trail_percent = TRAIL_PERCENT_DEFAULT
                         print(f"🛑 Fallback Stop: {trail_percent}% (ATR Missing)")
 
-                    print(f"🛑 Submitting Trailing Stop for {symbol}...")
                     try:
-                        # Construct arguments
+                        print(f"🛑 Submitting Trailing Stop for {symbol}...")
                         order_args = {
                             "symbol": symbol,
                             "qty": filled_qty,
@@ -160,42 +169,54 @@ def process_signals(api):
                         stop_order = api.submit_order(**order_args)
                         print(f"✅ Trailing Stop submitted: {stop_order.id}")
 
-                        # Update signal to EXECUTED
                         cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
                         conn.commit()
 
                     except Exception as stop_error:
-                        print(f"❌ FAILED to submit Trailing Stop: {stop_error}")
+                        print(f"❌ FAILED to submit Trailing Stop for {symbol}: {stop_error}")
+                        # Mark as EXECUTED_NO_STOP so we know we bought it but have no protection
                         cursor.execute("UPDATE trade_signals SET status = 'EXECUTED_NO_STOP' WHERE id = ?", (signal_id,))
                         conn.commit()
 
-                elif not filled:
-                    print(f"⚠️ Order {buy_order.id} timed out waiting for fill.")
-                    # Cancel the open order to avoid stale fills
-                    try:
-                        api.cancel_order(buy_order.id)
-                    except:
-                        pass
-                    cursor.execute("UPDATE trade_signals SET status = 'TIMEOUT' WHERE id = ?", (signal_id,))
+                elif status in ['canceled', 'rejected', 'expired']:
+                    print(f"❌ Order {order_id} ({symbol}) was {status}. Marking signal FAILED.")
+                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
                     conn.commit()
 
+                elif status in ['new', 'accepted', 'partially_filled', 'calculated', 'pending_new']:
+                    # Do nothing, wait for next loop
+                    pass
+
+                else:
+                    print(f"ℹ️ Order {order_id} ({symbol}) status: {status}")
+
             except Exception as e:
-                print(f"❌ Execution Error for {symbol}: {e}")
-                cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
-                conn.commit()
+                print(f"⚠️ Error checking order {order_id} for {symbol}: {e}")
 
     except Exception as e:
-        print(f"Alpaca Executor Loop Error: {e}")
-    finally:
-        conn.close()
+        print(f"Error in process_submitted_signals: {e}")
+
+def run_executor():
+    api = get_alpaca_api()
+    if not api:
+        print("❌ Alpaca API connection failed. Exiting.")
+        return
+
+    print("✅ Alpaca Executor Online (Async Mode).")
+
+    while True:
+        try:
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+
+            process_sized_signals(api, conn)
+            process_submitted_signals(api, conn)
+
+            conn.close()
+        except Exception as e:
+            print(f"Main Loop Error: {e}")
+
+        time.sleep(5)
 
 if __name__ == "__main__":
-    # print("Starting Alpaca Executor...")
-    api = get_alpaca_api()
-    if api:
-        print("✅ Alpaca Executor Online.")
-        while True:
-            process_signals(api)
-            time.sleep(5)
-    else:
-        print("❌ Alpaca API connection failed. Exiting.")
+    run_executor()
