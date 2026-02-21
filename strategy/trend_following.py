@@ -13,12 +13,12 @@ import traceback
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.config import KINGS_LIST
-from shared.smart_sleep import get_sleep_seconds, smart_sleep
+from shared.smart_sleep import get_sleep_time_to_next_candle, smart_sleep
 
 try:
-    from alpaca_trade_api.rest import REST
+    from alpaca.trading.client import TradingClient
 except ImportError:
-    REST = None
+    TradingClient = None
 
 
 def get_alpaca_api():
@@ -27,8 +27,8 @@ def get_alpaca_api():
     api_secret = os.getenv("APCA_API_SECRET_KEY")
     base_url = os.getenv("APCA_API_BASE_URL")
 
-    if REST and api_key and api_secret and base_url:
-        return REST(api_key, api_secret, base_url)
+    if TradingClient and api_key and api_secret and base_url:
+        return TradingClient(api_key, api_secret, paper=True if "paper" in base_url.lower() else False)
     return None
 
 
@@ -45,7 +45,7 @@ def evaluate_exits(cursor):
         return
 
     try:
-        positions = api.list_positions()
+        positions = api.get_all_positions()
         if not positions:
             return
 
@@ -316,5 +316,6 @@ if __name__ == "__main__":
     print("🚀 Strategy Engine Initialized (3-Tier Logic)")
     while True:
         run_strategy()
-        sleep_sec = get_sleep_seconds()
+        # Strategy runs at :40 (40s offset) to wait for AI
+        sleep_sec = get_sleep_time_to_next_candle(offset_seconds=40)
         smart_sleep(sleep_sec)

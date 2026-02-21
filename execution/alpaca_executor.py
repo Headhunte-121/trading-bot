@@ -16,10 +16,13 @@ from shared.db_utils import get_db_connection, log_system_event
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
 try:
-    from alpaca_trade_api.rest import REST, APIError
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest, GetOrdersRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+    from alpaca.common.exceptions import APIError
 except ImportError:
-    # Fallback if APIError is not directly importable
-    from alpaca_trade_api.rest import REST
+    # Fallback/Mock for local testing if not installed
+    TradingClient = None
     APIError = Exception
 
 TRAIL_PERCENT_DEFAULT = 2.0
@@ -48,7 +51,7 @@ class AlpacaExecutor:
             return
 
         try:
-            self.api = REST(api_key, api_secret, base_url)
+            self.api = TradingClient(api_key, api_secret, paper=True if "paper" in base_url.lower() else False)
             self._log("INFO", "✅ Alpaca API Connected Successfully.")
         except Exception as e:
             self._log("CRITICAL", f"Failed to initialize Alpaca API: {e}")
@@ -137,20 +140,20 @@ class AlpacaExecutor:
 
                     # 1. Cancel all pending orders for this symbol (e.g., Trailing Stops)
                     try:
-                        # list_orders supports symbols as a list in newer versions, but to be safe and compatible:
-                        orders = self._safe_api_call(self.api.list_orders, status='open')
+                        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+                        orders = self._safe_api_call(self.api.get_orders, req)
+
                         if orders:
                             for order in orders:
-                                if order.symbol == symbol:
-                                    self._safe_api_call(self.api.cancel_order, order.id)
-                                    self._log("INFO", f"   -> Canceled open order {order.id} for {symbol}.")
+                                self._safe_api_call(self.api.cancel_order_by_id, order.id)
+                                self._log("INFO", f"   -> Canceled open order {order.id} for {symbol}.")
                     except Exception as e:
                         self._log("ERROR", f"   -> Failed to cancel orders: {e}")
 
                     # 2. Get current position size
                     try:
                         try:
-                            position = self._safe_api_call(self.api.get_position, symbol)
+                            position = self._safe_api_call(self.api.get_open_position, symbol)
                             current_qty = float(position.qty) if position else 0.0
                         except Exception:
                             # 404 if no position
@@ -159,14 +162,15 @@ class AlpacaExecutor:
                         if current_qty > 0:
                             # 3. Submit Market Sell
                             self._log("INFO", f"   -> Selling {current_qty} shares of {symbol} (Market)...")
-                            sell_order = self._safe_api_call(
-                                self.api.submit_order,
+
+                            req = MarketOrderRequest(
                                 symbol=symbol,
                                 qty=current_qty,
-                                side='sell',
+                                side=OrderSide.SELL,
                                 type='market',
-                                time_in_force='gtc'
+                                time_in_force=TimeInForce.GTC
                             )
+                            sell_order = self._safe_api_call(self.api.submit_order, req)
 
                             if sell_order:
                                 cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
@@ -187,14 +191,14 @@ class AlpacaExecutor:
                     self._log("INFO", f"   -> Submitting BUY {qty} {symbol} (Market)...")
 
                     # Submit Market Buy Order
-                    buy_order = self._safe_api_call(
-                        self.api.submit_order,
+                    req = MarketOrderRequest(
                         symbol=symbol,
                         qty=qty,
-                        side='buy',
+                        side=OrderSide.BUY,
                         type='market',
-                        time_in_force='gtc'
+                        time_in_force=TimeInForce.GTC
                     )
+                    buy_order = self._safe_api_call(self.api.submit_order, req)
 
                     if buy_order:
                         # Update status to SUBMITTED
@@ -245,13 +249,14 @@ class AlpacaExecutor:
                     conn.commit()
                     continue
 
-                order_status = self._safe_api_call(self.api.get_order, order_id)
+                order_status = self._safe_api_call(self.api.get_order_by_id, order_id)
 
                 if not order_status:
                     continue
 
                 status = order_status.status
 
+                # alpaca-py uses enums, but the status property returns OrderStatus (str-like)
                 if status == 'filled':
                     filled_qty = float(order_status.filled_qty)
                     avg_price = float(order_status.filled_avg_price) if order_status.filled_avg_price else 0.0
@@ -316,18 +321,24 @@ class AlpacaExecutor:
             # Fallback if ATR is missing
             trail_percent = TRAIL_PERCENT_DEFAULT
 
-        order_args = {
-            "symbol": symbol,
-            "qty": qty,
-            "side": "sell",
-            "type": "trailing_stop",
-            "time_in_force": "gtc"
-        }
+        req = None
         if trail_price:
-            order_args["trail_price"] = trail_price
+            req = TrailingStopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                trail_price=trail_price
+            )
             stop_desc = f"${trail_price} (ATR based)"
         else:
-            order_args["trail_percent"] = trail_percent
+            req = TrailingStopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                trail_percent=trail_percent
+            )
             stop_desc = f"{trail_percent}% (Fallback)"
 
         self._log("INFO", f"🛑 Attempting Trailing Stop for {symbol}: {stop_desc}")
@@ -337,7 +348,7 @@ class AlpacaExecutor:
         success = False
 
         for attempt in range(1, max_retries + 1):
-            stop_order = self._safe_api_call(self.api.submit_order, **order_args)
+            stop_order = self._safe_api_call(self.api.submit_order, req)
 
             if stop_order:
                 self._log("INFO", f"✅ Trailing Stop submitted (Attempt {attempt}): {stop_order.id}")

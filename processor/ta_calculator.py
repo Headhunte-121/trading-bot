@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
-from shared.smart_sleep import get_sleep_seconds, smart_sleep
+from shared.smart_sleep import get_sleep_time_to_next_candle, smart_sleep
 
 
 class TACalculator:
@@ -131,6 +131,10 @@ class TACalculator:
             df['datetime'] = pd.to_datetime(df['timestamp'])
             df.set_index('datetime', inplace=True)
 
+            # Fix Zero Volume Glitches (Yahoo Finance Data Quality)
+            # Replace 0 with NaN, then forward fill, then fill remaining NaNs with 0
+            df['volume'] = df['volume'].replace(0, float('nan')).ffill().fillna(0)
+
             # 3. Vectorized Indicator Calculation (on full history)
             # SMA 50
             df['sma_50'] = df.ta.sma(length=50, close='close')
@@ -241,6 +245,7 @@ if __name__ == "__main__":
     calc = TACalculator()
     while True:
         calc.run()
-        sleep_sec = get_sleep_seconds()
+        # TA runs at :20 (20s offset after candle close)
+        sleep_sec = get_sleep_time_to_next_candle(offset_seconds=20)
         print(f"💤 TA Sleeping for {sleep_sec} seconds...")
         smart_sleep(sleep_sec)
