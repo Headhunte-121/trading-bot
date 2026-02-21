@@ -11,7 +11,7 @@ from chronos import ChronosPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
 from shared.config import SYMBOLS
-from shared.smart_sleep import get_sleep_seconds
+from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
 MODEL_SMALL = "amazon/chronos-t5-small"
 MODEL_LARGE = "amazon/chronos-t5-large"
@@ -190,4 +190,4 @@ if __name__ == "__main__":
 
         sleep_sec = get_sleep_seconds()
         print(f"💤 Sleeping for {sleep_sec} seconds...")
-        time.sleep(sleep_sec)
+        smart_sleep(sleep_sec)

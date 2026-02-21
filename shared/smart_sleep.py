@@ -2,7 +2,7 @@ import time
 import sys
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -89,6 +89,17 @@ def get_market_status():
                 'sleep_seconds': SLEEP_ACTIVE
             }
         else:
+            # Calculate time until market open
+            if is_weekday and ny_time < market_open:
+                # Same day, before market open
+                seconds_until_open = (market_open - ny_time).total_seconds()
+                sleep_seconds = min(SLEEP_PASSIVE, int(seconds_until_open))
+                return {
+                    'is_open': False,
+                    'status_message': f"🟠 Market Closed - Opening in {int(seconds_until_open)}s",
+                    'sleep_seconds': sleep_seconds
+                }
+
             return {
                 'is_open': False,
                 'status_message': "🔴 Market Closed - Sleep Mode (1h)",
@@ -108,6 +119,18 @@ def get_sleep_seconds():
     """Returns the sleep duration in seconds based on market status."""
     return get_market_status()['sleep_seconds']
 
+def smart_sleep(seconds):
+    """
+    Sleeps for the specified duration but checks for 'FORCE_AWAKE' every second.
+    If 'FORCE_AWAKE' is detected, it wakes up immediately.
+    """
+    for _ in range(int(seconds)):
+        sleep_mode = get_config_value("sleep_mode", "AUTO")
+        if sleep_mode == "FORCE_AWAKE":
+            print("⚡ Force Awake Detected! Waking up...")
+            return
+        time.sleep(1)
+
 if __name__ == "__main__":
     status = get_market_status()
     print(f"{status['status_message']}")
@@ -117,4 +140,4 @@ if __name__ == "__main__":
     log_system_event("SmartSleeper", log_level, f"{status['status_message']} - Sleeping {status['sleep_seconds']}s")
 
     print(f"Sleeping for {status['sleep_seconds']} seconds...")
-    time.sleep(status['sleep_seconds'])
+    smart_sleep(status['sleep_seconds'])

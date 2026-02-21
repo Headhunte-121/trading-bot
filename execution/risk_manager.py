@@ -7,7 +7,7 @@ import time
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection
-from shared.smart_sleep import get_sleep_seconds
+from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
 # Configuration
 ACCOUNT_SIZE = 100000
@@ -90,4 +90,4 @@ if __name__ == "__main__":
 
         sleep_sec = get_sleep_seconds()
         print(f"💤 Risk Manager Sleeping for {sleep_sec} seconds...")
-        time.sleep(sleep_sec)
+        smart_sleep(sleep_sec)

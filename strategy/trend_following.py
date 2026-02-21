@@ -8,7 +8,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.config import KINGS_LIST
-from shared.smart_sleep import get_sleep_seconds
+from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
 def get_macro_regime(cursor):
     """
@@ -181,4 +181,4 @@ if __name__ == "__main__":
         run_strategy()
         sleep_sec = get_sleep_seconds()
         # print(f"💤 Strategy Sleeping for {sleep_sec} seconds...")
-        time.sleep(sleep_sec)
+        smart_sleep(sleep_sec)
