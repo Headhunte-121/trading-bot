@@ -1,6 +1,5 @@
 # Data Ingestion
 yfinance>=0.2.0
-beautifulsoup4
 requests
 
 # Data Processing
@@ -8,7 +7,7 @@ pandas>=2.0.0
 # Use pandas-ta from PyPI
 pandas-ta
 
-# AI/NLP
+# AI/Time-Series
 transformers
 torch
 bitsandbytes>=0.41.0

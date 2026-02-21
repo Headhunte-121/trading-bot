@@ -1,8 +1,13 @@
+"""
+Service: Strategy Engine
+Role: Evaluates market data against a 3-Tier strategy to generate BUY signals.
+Dependencies: sqlite3, shared.db_utils, shared.config
+"""
 import sqlite3
 import os
 import sys
 import datetime
-import time
+import traceback
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,10 +15,20 @@ from shared.db_utils import get_db_connection, log_system_event
 from shared.config import KINGS_LIST
 from shared.smart_sleep import get_sleep_seconds, smart_sleep
 
+
 def get_macro_regime(cursor):
     """
     Determines the market regime based on SPY 5m data.
-    Regime is BEAR if Close < SMA 50, else BULL.
+
+    Logic:
+    - BULL: SPY Close >= SMA 50
+    - BEAR: SPY Close < SMA 50
+
+    Args:
+        cursor: Database cursor.
+
+    Returns:
+        str: 'BULL' or 'BEAR'.
     """
     try:
         query = """
@@ -37,26 +52,43 @@ def get_macro_regime(cursor):
             if sma_50 is not None and close < sma_50:
                 return 'BEAR'
             return 'BULL'
-        return 'BULL' # Default fallback
+        return 'BULL'  # Default fallback
     except Exception as e:
-        print(f"⚠️ Error checking macro regime: {e}")
+        log_system_event("StrategyEngine", "WARNING", f"Error checking macro regime: {e}")
         return 'BULL'
+
 
 def run_strategy():
     """
     Executes the 3-Tier Strategy Engine:
+
     1. VWAP Scalp (Momentum)
+       - Close > VWAP
+       - Volume > Volume SMA 20 (High Volume)
+       - AI Conviction > 0.3%
+
     2. Deep Value Buy (Kings List Dip)
+       - Symbol in KINGS_LIST (Mega-Cap Tech)
+       - Close < SMA 200 (Oversold/Dip)
+       - RSI < 30 (Deeply Oversold)
+       - AI Conviction > 0.5%
+
     3. Trend Buy (Wave Surfer)
+       - Macro Regime is BULL
+       - Close > SMA 200 (Long term uptrend)
+       - RSI between 35 and 55 (Healthy pullback)
+       - Volume > Volume SMA 20
+       - AI Conviction > 0.5%
     """
     conn = get_db_connection()
+    if not conn:
+        return
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
         # 1. Determine Global Macro Regime
         macro_regime = get_macro_regime(cursor)
-        # print(f"🌍 Global Macro Regime: {macro_regime}")
 
         # 2. Fetch Candidates (Last 60 mins)
         lookback_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=60)
@@ -120,25 +152,19 @@ def run_strategy():
                 (symbol, timestamp)
             )
             if cursor.fetchone():
-                continue # Already signaled
+                continue  # Already signaled
 
             signal_type = None
 
             # --- EVALUATION LOGIC (Tier 1 -> Tier 2 -> Tier 3) ---
 
             # Tier 1: VWAP_SCALP (Momentum)
-            # Logic: Price crosses ABOVE intraday VWAP + High Vol + AI Conviction
-            # We check if Close > VWAP. Strictly "Cross" implies Close > VWAP and Open < VWAP,
-            # but prompt says "If current_price crosses ABOVE... trigger a BUY".
-            # For simplicity in a poll-based system, "Close > VWAP" is the state we look for,
-            # combined with AI prediction.
             if (pred_pct > 0.3 and
                 volume > vol_sma and
                 close > vwap):
                 signal_type = 'VWAP_SCALP'
 
             # Tier 2: DEEP_VALUE_BUY (The King Dip)
-            # Logic: King List + Below SMA 200 + RSI < 30 + AI Conviction
             elif (symbol in KINGS_LIST and
                   close < sma_200 and
                   rsi < 30 and
@@ -146,7 +172,6 @@ def run_strategy():
                 signal_type = 'DEEP_VALUE_BUY'
 
             # Tier 3: TREND_BUY (The Wave Surfer)
-            # Logic: Bull Market + Above SMA 200 + Healthy RSI + Volume + AI Conviction
             elif (macro_regime == 'BULL' and
                   close > sma_200 and
                   35 < rsi < 55 and
@@ -170,15 +195,14 @@ def run_strategy():
     except Exception as e:
         print(f"Strategy Engine Error: {e}")
         log_system_event("StrategyEngine", "ERROR", f"Critical Error: {str(e)}")
-        import traceback
         traceback.print_exc()
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     print("🚀 Strategy Engine Initialized (3-Tier Logic)")
     while True:
         run_strategy()
         sleep_sec = get_sleep_seconds()
-        # print(f"💤 Strategy Sleeping for {sleep_sec} seconds...")
         smart_sleep(sleep_sec)

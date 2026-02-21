@@ -1,3 +1,8 @@
+"""
+Service: Alpaca Executor
+Role: Executes trade signals (Market Buy) and manages risk (Trailing Stops) via the Alpaca API.
+Dependencies: alpaca_trade_api, sqlite3, shared.db_utils
+"""
 import os
 import time
 import sqlite3
@@ -13,13 +18,18 @@ from shared.smart_sleep import get_sleep_seconds, smart_sleep
 try:
     from alpaca_trade_api.rest import REST, APIError
 except ImportError:
-    # Fallback if APIError is not directly importable (though it should be)
+    # Fallback if APIError is not directly importable
     from alpaca_trade_api.rest import REST
     APIError = Exception
 
 TRAIL_PERCENT_DEFAULT = 2.0
 
+
 class AlpacaExecutor:
+    """
+    Manages trade execution and risk management via Alpaca API.
+    Implements a Circuit Breaker pattern to halt operations on critical API failures.
+    """
     def __init__(self):
         self.api = None
         self.failure_count = 0
@@ -71,10 +81,7 @@ class AlpacaExecutor:
                 self.circuit_breaker_tripped = True
                 self._log("FATAL", "🔥 CIRCUIT BREAKER TRIPPED! Stopping all trading activities due to consecutive API failures.")
         else:
-            # If it's a different error (e.g., 400 Bad Request, 429 Rate Limit),
-            # we might not want to trip immediately, but 429 is serious.
-            # User specifically mentioned Auth or 500.
-            # I will keep it strict to the requirement but maybe reset count on success.
+            # Non-critical errors (e.g., 400 Bad Request) do not trip the breaker immediately
             pass
 
     def _safe_api_call(self, func, *args, **kwargs):
@@ -119,24 +126,11 @@ class AlpacaExecutor:
             for signal in signals:
                 signal_id = signal['id']
                 symbol = signal['symbol']
-                qty = float(signal['size']) # Ensure float for robust handling, though int is preferred for stocks usually
-                # API usually accepts float or int. User said "qty = int(signal['size'])" in original code.
-                # I'll stick to float but maybe cast to int if needed?
-                # Original code: qty = int(signal['size'])
-                # But Crypto allows fractional.
-                # User's Memory: "Calculates fractional quantities...".
-                # I should probably not cast to int blindly if it's crypto.
-                # Let's check shared config or just use float.
-                # Original code used `int(signal['size'])`.
-                # I'll use `float` to be safe for crypto, as Alpaca handles it.
+                qty = float(signal['size'])  # Ensure float for flexibility (crypto support)
 
                 self._log("INFO", f"   -> Submitting BUY {qty} {symbol} (Market)...")
 
-                # Use _safe_api_call
-                # We need to pass the function and args.
-                # Since submit_order is a method of self.api, we can pass a lambda or partial,
-                # or just pass the method bound to the object.
-
+                # Submit Market Buy Order
                 buy_order = self._safe_api_call(
                     self.api.submit_order,
                     symbol=symbol,
@@ -152,15 +146,11 @@ class AlpacaExecutor:
                     conn.commit()
                     self._log("INFO", f"   -> Signal {signal_id} ({symbol}) moved to SUBMITTED. Order ID: {buy_order.id}")
                 else:
-                    # API call failed (and handled by _safe_api_call)
-                    # We might want to mark as FAILED if it wasn't a circuit breaker trip,
-                    # but if it was a temporary error, maybe leave as SIZED?
-                    # Original code marked as FAILED on exception.
-                    # I'll mark as FAILED to prevent infinite loops on bad orders.
+                    # Mark as FAILED if API call failed (unless Circuit Breaker tripped)
                     if not self.circuit_breaker_tripped:
-                         self._log("ERROR", f"❌ Failed to submit BUY order for {symbol}.")
-                         cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
-                         conn.commit()
+                        self._log("ERROR", f"❌ Failed to submit BUY order for {symbol}.")
+                        cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                        conn.commit()
 
         except Exception as e:
             self._log("ERROR", f"Error in process_sized_signals: {e}")
@@ -229,6 +219,7 @@ class AlpacaExecutor:
             traceback.print_exc()
 
     def _log_trade(self, conn, symbol, price, qty, side, timestamp_str, signal_type):
+        """Logs the executed trade details to the executed_trades table."""
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -241,9 +232,17 @@ class AlpacaExecutor:
 
     def _submit_trailing_stop(self, conn, signal_id, symbol, qty, atr, signal_type):
         """
-        Submits a trailing stop with retry logic (3 attempts).
+        Submits a trailing stop order to protect the position.
+
+        Logic:
+        1. Calculates Stop Price based on ATR and Signal Type (Tier Multipliers).
+           - VWAP_SCALP: 1.5x ATR (Tighter stop for momentum scalp)
+           - DEEP_VALUE_BUY: 2.0x ATR (Standard swing stop)
+           - TREND_BUY: 3.0x ATR (Looser stop for trend riding)
+        2. Submits 'trailing_stop' order to Alpaca.
+        3. Implements a Retry Mechanism (3 attempts) to handle API glitches.
         """
-        # Calculate parameters
+        # Calculate trailing parameters
         trail_price = None
         trail_percent = None
 
@@ -258,6 +257,7 @@ class AlpacaExecutor:
 
             trail_price = round(multiplier * float(atr), 2)
         else:
+            # Fallback if ATR is missing
             trail_percent = TRAIL_PERCENT_DEFAULT
 
         order_args = {
@@ -293,7 +293,7 @@ class AlpacaExecutor:
             else:
                 self._log("WARNING", f"⚠️ Trailing Stop attempt {attempt} failed for {symbol}.")
                 if attempt < max_retries:
-                    time.sleep(3) # Wait before retry
+                    time.sleep(3)  # Wait before retry
 
         if not success:
             self._log("CRITICAL", f"❌ FAILED TO PROTECT POSITION: Could not submit Trailing Stop for {symbol} after {max_retries} attempts.")
@@ -302,12 +302,13 @@ class AlpacaExecutor:
             conn.commit()
 
     def run(self):
+        """Main execution loop."""
         self._log("INFO", "✅ Alpaca Executor Online (Circuit Breaker & Smart Sleep Enabled).")
 
         while True:
             if self.circuit_breaker_tripped:
                 self._log("FATAL", "💀 Executor Halted due to Circuit Breaker. Manual intervention required.")
-                time.sleep(300) # Sleep long to avoid log spam
+                time.sleep(300)  # Sleep long to avoid log spam
                 continue
 
             conn = None
@@ -333,8 +334,7 @@ class AlpacaExecutor:
                 else:
                     # No pending orders, respect market hours
                     sleep_seconds = get_sleep_seconds()
-                    # Only log if it's a significant sleep (>= 60s) or status changed
-                    # But for now, just standard log
+                    # Only log if it's a significant sleep (>= 60s)
                     if sleep_seconds > 60:
                         self._log("INFO", f"💤 No pending orders. Sleeping for {sleep_seconds}s...")
                     smart_sleep(sleep_seconds)
@@ -346,8 +346,9 @@ class AlpacaExecutor:
                 if conn:
                     try:
                         conn.close()
-                    except:
+                    except Exception:
                         pass
+
 
 if __name__ == "__main__":
     executor = AlpacaExecutor()

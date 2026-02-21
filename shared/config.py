@@ -1,4 +1,8 @@
-# Shared Configuration
+"""
+Service: Shared Configuration
+Role: Centralized configuration for the Deep Quant Terminal.
+Dependencies: None
+"""
 
 # List of symbols to track
 SYMBOLS = [

@@ -1,12 +1,20 @@
+"""
+Service: Dashboard Data Manager
+Role: Abstraction layer for database interactions and business logic for the UI.
+Dependencies: pandas, streamlit, shared.db_utils
+"""
 import pandas as pd
 import streamlit as st
 import sys
 import os
-import datetime
 
 # Ensure shared package is available
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
 from shared.db_utils import get_db_connection
+
 
 class DataManager:
     """
@@ -96,6 +104,7 @@ class DataManager:
             int: Estimated load percentage (0-100).
         """
         try:
+            # We count predictions in the last minute to estimate activity.
             query = """
                 SELECT COUNT(*) as count
                 FROM ai_predictions
@@ -104,19 +113,18 @@ class DataManager:
             df = DataManager._fetch_query(query)
             if not df.empty:
                 count = df['count'].iloc[0]
-                # Assume max 50 symbols per minute = 100% load
+                # Heuristic: 50 symbols processed per minute approx 100% load
                 load = min(count * 2, 100)
                 return int(load)
             return 0
-        except:
+        except Exception:
             return 0
 
     @staticmethod
     @st.cache_data(ttl=5)
     def get_ticker_tape() -> pd.DataFrame:
         """
-        Fetches the latest market data for the ticker tape.
-        joins 'market_data' with latest timestamp per symbol.
+        Fetches the latest market data (Close, Open, Volume) for the ticker tape.
 
         Returns:
             pd.DataFrame: Columns [symbol, close, open, volume, pct_change].
@@ -146,7 +154,7 @@ class DataManager:
     def get_ensemble_radar() -> pd.DataFrame:
         """
         Fetches latest AI predictions and technical indicators to build the Radar view.
-        Calculates 'Conviction' score based on magnitude and agreement.
+        Calculates a 'Conviction' score based on Magnitude and Ensemble Agreement.
 
         Returns:
             pd.DataFrame: Enriched dataframe with conviction scores and direction.
@@ -221,8 +229,7 @@ class DataManager:
     @st.cache_data(ttl=10)
     def get_technical_heatmap() -> pd.DataFrame:
         """
-        Fetches latest technical indicators for the heatmap.
-        Filters for the default timeframe (assumed 5m based on context).
+        Fetches latest technical indicators (RSI, SMA) for the heatmap.
 
         Returns:
             pd.DataFrame: Columns [symbol, rsi_14, sma_50, sma_200, timestamp].
@@ -246,7 +253,6 @@ class DataManager:
     def get_chart_data(symbol: str) -> pd.DataFrame:
         """
         Fetches historical market data and technical indicators for a specific symbol.
-        Used for plotting the main chart.
 
         Args:
             symbol (str): The ticker symbol.
@@ -270,8 +276,7 @@ class DataManager:
     @staticmethod
     def get_system_logs() -> pd.DataFrame:
         """
-        Fetches the latest system logs.
-        Not cached to ensure real-time debugging.
+        Fetches the latest system logs for display.
 
         Returns:
             pd.DataFrame: Columns [timestamp, service_name, log_level, message].
@@ -287,7 +292,7 @@ class DataManager:
     @staticmethod
     def get_ledger() -> pd.DataFrame:
         """
-        Fetches executed trades.
+        Fetches the history of executed trades.
 
         Returns:
             pd.DataFrame: Recent trades.
@@ -310,7 +315,7 @@ class DataManager:
     @st.cache_data(ttl=60)
     def get_available_symbols() -> list:
         """
-        Fetches a list of all distinct symbols in the market data.
+        Fetches a list of all distinct symbols available in the market data.
 
         Returns:
             list: List of symbol strings.
