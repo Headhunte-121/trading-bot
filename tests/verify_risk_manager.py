@@ -153,5 +153,54 @@ class TestRiskManager(unittest.TestCase):
         self.assertEqual(status, 'EXPIRED')
         self.assertIsNone(size) # Size should not be updated (null or whatever default)
 
+    @patch('execution.risk_manager.get_db_connection')
+    def test_diverse_signal_types(self, mock_get_db):
+        """Tests that RiskManager processes signals other than 'BUY' (e.g. VWAP_SCALP, TREND_BUY)."""
+        mock_get_db.side_effect = lambda: sqlite3.connect(DB_PATH)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        # Insert signals with different types
+        self.cursor.execute("INSERT INTO trade_signals (symbol, timestamp, signal_type, status) VALUES (?, ?, ?, ?)",
+                            ('NVDA', timestamp, 'VWAP_SCALP', 'PENDING'))
+        id1 = self.cursor.lastrowid
+
+        self.cursor.execute("INSERT INTO trade_signals (symbol, timestamp, signal_type, status) VALUES (?, ?, ?, ?)",
+                            ('AMD', timestamp, 'TREND_BUY', 'PENDING'))
+        id2 = self.cursor.lastrowid
+
+        # Insert corresponding market data
+        self.cursor.execute("INSERT INTO market_data (symbol, timestamp, timeframe, close) VALUES (?, ?, ?, ?)",
+                            ('NVDA', timestamp, '5m', 200.0))
+        self.cursor.execute("INSERT INTO market_data (symbol, timestamp, timeframe, close) VALUES (?, ?, ?, ?)",
+                            ('AMD', timestamp, '5m', 100.0))
+        self.conn.commit()
+
+        # Run risk manager
+        from io import StringIO
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            execution.risk_manager.run_risk_manager()
+        except Exception as e:
+            sys.stdout = original_stdout
+            self.fail(f"run_risk_manager raised exception: {e}")
+
+        sys.stdout = original_stdout
+
+        # Verify signals were sized
+        check_conn = sqlite3.connect(DB_PATH)
+        check_cursor = check_conn.cursor()
+
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (id1,))
+        self.assertEqual(check_cursor.fetchone()[0], 'SIZED')
+
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (id2,))
+        self.assertEqual(check_cursor.fetchone()[0], 'SIZED')
+
+        check_conn.close()
+
 if __name__ == '__main__':
     unittest.main()

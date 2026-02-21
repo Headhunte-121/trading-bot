@@ -91,7 +91,7 @@ class RiskManager:
                 SELECT ts.id, ts.symbol, ts.timestamp, md.close
                 FROM trade_signals ts
                 JOIN market_data md ON ts.symbol = md.symbol AND ts.timestamp = md.timestamp
-                WHERE ts.status = 'PENDING' AND ts.signal_type = 'BUY'
+                WHERE ts.status = 'PENDING'
                 AND md.timeframe = '5m'
             """
             cursor.execute(query)
