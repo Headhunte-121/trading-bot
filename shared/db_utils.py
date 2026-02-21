@@ -7,6 +7,7 @@ import sqlite3
 import os
 import sys
 import datetime
+import time
 
 # Define the path to the database
 # Using absolute path resolution relative to this file
@@ -19,6 +20,7 @@ DB_PATH = os.path.join(DATA_DIR, DB_NAME)
 def get_db_connection(db_path=None, timeout=60.0):
     """
     Establishes a connection to the SQLite database with configured timeout and journal mode.
+    Implements a retry mechanism for transient errors (e.g., locking).
 
     Args:
         db_path (str, optional): Path to the database file. Defaults to shared.db_utils.DB_PATH.
@@ -35,18 +37,33 @@ def get_db_connection(db_path=None, timeout=60.0):
     if not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
 
-    try:
-        conn = sqlite3.connect(db_path, timeout=timeout)
-        conn.row_factory = sqlite3.Row  # Enable column access by name
+    max_retries = 3
+    retry_delay = 0.5
 
-        # Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")  # Recommended for WAL mode
-        conn.execute("PRAGMA busy_timeout=5000;")  # Wait up to 5000ms for a lock
-        return conn
-    except sqlite3.Error as e:
-        print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
-        return None
+    for attempt in range(1, max_retries + 1):
+        try:
+            conn = sqlite3.connect(db_path, timeout=timeout)
+            conn.row_factory = sqlite3.Row  # Enable column access by name
+
+            # Enable WAL mode for better concurrency
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")  # Recommended for WAL mode
+            conn.execute("PRAGMA busy_timeout=5000;")  # Wait up to 5000ms for a lock
+            return conn
+        except sqlite3.OperationalError as e:
+            # Handle transient locking or file access errors
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(f"[ERROR] Failed to connect to database at {db_path} after {max_retries} attempts: {e}", file=sys.stderr)
+                return None
+        except sqlite3.Error as e:
+            # Non-recoverable error
+            print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
+            return None
+
+    return None
 
 
 def execute_query(query, params=(), db_path=None):
