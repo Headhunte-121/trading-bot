@@ -151,17 +151,23 @@ def get_sleep_seconds():
 def smart_sleep(seconds):
     """
     Sleeps for the specified duration but checks for 'FORCE_AWAKE' every second.
-    If 'FORCE_AWAKE' is detected, it wakes up immediately.
+    If 'FORCE_AWAKE' is detected AND the sleep duration is long (> 300s), it wakes up immediately.
+    Short sleeps (<= 300s) are respected to prevent rapid looping.
 
     Args:
         seconds (int): Total seconds to sleep.
     """
+    seconds = int(seconds)
     # Cast to int to ensure range works
-    for _ in range(int(seconds)):
+    for _ in range(seconds):
         sleep_mode = get_config_value("sleep_mode", "AUTO")
-        if sleep_mode == "FORCE_AWAKE":
+
+        # Only interrupt if we are in a LONG sleep (e.g. market closed)
+        # If we are already in active mode (sleeping 300s), let it sleep!
+        if sleep_mode == "FORCE_AWAKE" and seconds > SLEEP_ACTIVE:
             print("⚡ Force Awake Detected! Waking up...")
             return
+
         time.sleep(1)
 
 
