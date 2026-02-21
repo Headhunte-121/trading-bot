@@ -202,5 +202,113 @@ class TestRiskManager(unittest.TestCase):
 
         check_conn.close()
 
+    @patch('execution.risk_manager.get_db_connection')
+    def test_timestamp_mismatch(self, mock_get_db):
+        """Tests that RiskManager finds market data even if timestamps don't match exactly."""
+        mock_get_db.side_effect = lambda: sqlite3.connect(DB_PATH)
+
+        now = datetime.now(timezone.utc)
+        market_time = (now - timedelta(minutes=5)).isoformat()
+        signal_time = (now - timedelta(minutes=4)).isoformat() # 1 min later than candle
+
+        # Insert signal
+        self.cursor.execute("INSERT INTO trade_signals (symbol, timestamp, signal_type, status) VALUES (?, ?, ?, ?)",
+                            ('TSLA', signal_time, 'VWAP_SCALP', 'PENDING'))
+        signal_id = self.cursor.lastrowid
+
+        # Insert market data (slightly earlier)
+        self.cursor.execute("INSERT INTO market_data (symbol, timestamp, timeframe, close) VALUES (?, ?, ?, ?)",
+                            ('TSLA', market_time, '5m', 250.0))
+        self.conn.commit()
+
+        # Run risk manager
+        from io import StringIO
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            execution.risk_manager.run_risk_manager()
+        except Exception as e:
+            sys.stdout = original_stdout
+            self.fail(f"run_risk_manager raised exception: {e}")
+
+        sys.stdout = original_stdout
+
+        # Verify signal sized
+        check_conn = sqlite3.connect(DB_PATH)
+        check_cursor = check_conn.cursor()
+        check_cursor.execute("SELECT status, size FROM trade_signals WHERE id = ?", (signal_id,))
+        row = check_cursor.fetchone()
+        check_conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 'SIZED')
+        # Check size calculation: 100k * 0.01 / 250 = 4
+        self.assertEqual(row[1], 4)
+
+    @patch('execution.risk_manager.get_db_connection')
+    def test_signal_filtering(self, mock_get_db):
+        """Tests that RiskManager sizes 'BUY' and 'SCALP' signals but ignores others (e.g. 'EXIT')."""
+        mock_get_db.side_effect = lambda: sqlite3.connect(DB_PATH)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        # Insert signals
+        signals = [
+            ('NVDA', 'VWAP_SCALP'),  # Should be SIZED
+            ('AMD', 'TREND_BUY'),    # Should be SIZED
+            ('INTC', 'MARKET_EXIT'), # Should be IGNORED
+            ('TSLA', 'PANIC_SELL')   # Should be IGNORED
+        ]
+
+        ids = []
+        for sym, s_type in signals:
+            self.cursor.execute("INSERT INTO trade_signals (symbol, timestamp, signal_type, status) VALUES (?, ?, ?, ?)",
+                                (sym, timestamp, s_type, 'PENDING'))
+            ids.append(self.cursor.lastrowid)
+
+            # Add market data
+            self.cursor.execute("INSERT INTO market_data (symbol, timestamp, timeframe, close) VALUES (?, ?, ?, ?)",
+                                (sym, timestamp, '5m', 100.0))
+
+        self.conn.commit()
+
+        # Run risk manager
+        from io import StringIO
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            execution.risk_manager.run_risk_manager()
+        except Exception as e:
+            sys.stdout = original_stdout
+            self.fail(f"run_risk_manager raised exception: {e}")
+
+        sys.stdout = original_stdout
+
+        # Verify results
+        check_conn = sqlite3.connect(DB_PATH)
+        check_cursor = check_conn.cursor()
+
+        # Check VWAP_SCALP (id 0) -> SIZED
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (ids[0],))
+        self.assertEqual(check_cursor.fetchone()[0], 'SIZED', "VWAP_SCALP should be sized")
+
+        # Check TREND_BUY (id 1) -> SIZED
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (ids[1],))
+        self.assertEqual(check_cursor.fetchone()[0], 'SIZED', "TREND_BUY should be sized")
+
+        # Check MARKET_EXIT (id 2) -> PENDING (Ignored)
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (ids[2],))
+        self.assertEqual(check_cursor.fetchone()[0], 'PENDING', "MARKET_EXIT should remain PENDING")
+
+        # Check PANIC_SELL (id 3) -> PENDING (Ignored)
+        check_cursor.execute("SELECT status FROM trade_signals WHERE id = ?", (ids[3],))
+        self.assertEqual(check_cursor.fetchone()[0], 'PENDING', "PANIC_SELL should remain PENDING")
+
+        check_conn.close()
+
 if __name__ == '__main__':
     unittest.main()

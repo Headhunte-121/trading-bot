@@ -87,12 +87,23 @@ class RiskManager:
 
         try:
             # Optimize: select specific columns
+            # Using subquery to fetch latest available 5m close price to handle timestamp mismatches
             query = """
-                SELECT ts.id, ts.symbol, ts.timestamp, md.close
+                SELECT
+                    ts.id,
+                    ts.symbol,
+                    ts.timestamp,
+                    (
+                        SELECT close
+                        FROM market_data md
+                        WHERE md.symbol = ts.symbol
+                        AND md.timeframe = '5m'
+                        ORDER BY md.timestamp DESC
+                        LIMIT 1
+                    ) as close
                 FROM trade_signals ts
-                JOIN market_data md ON ts.symbol = md.symbol AND ts.timestamp = md.timestamp
                 WHERE ts.status = 'PENDING'
-                AND md.timeframe = '5m'
+                AND (ts.signal_type LIKE '%BUY' OR ts.signal_type LIKE '%SCALP')
             """
             cursor.execute(query)
             pending_signals = cursor.fetchall()
