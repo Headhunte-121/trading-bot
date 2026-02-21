@@ -1,16 +1,30 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import sys
 import datetime
-import time
 import warnings
 import logging
+import textwrap
 from streamlit_autorefresh import st_autorefresh
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+
+# Ensure project root is in path for imports
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# Import DataManager
+try:
+    from dashboard.data_manager import DataManager
+except ImportError:
+    # Fallback if running directly from dashboard folder without package context
+    from data_manager import DataManager
+
+# Import shared modules
+from shared.smart_sleep import get_market_status
 
 # Suppress Warnings (Aggressive)
 warnings.filterwarnings("ignore")
@@ -18,15 +32,6 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 # Suppress Streamlit Logs
 logging.getLogger("streamlit").setLevel(logging.ERROR)
-
-# Database Path
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "data", "trade_history.db")
-
-# Import shared modules
-sys.path.append(BASE_DIR)
-from shared.smart_sleep import get_market_status
-from shared.db_utils import get_db_connection as shared_get_db_connection
 
 # --- Configuration ---
 st.set_page_config(
@@ -38,221 +43,19 @@ st.set_page_config(
 
 # --- Utilities ---
 def load_css(file_path):
+    """Loads custom CSS from a file."""
     if os.path.exists(file_path):
         with open(file_path) as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-def get_db_connection():
-    try:
-        # Use shared connection logic to enable WAL mode and optimizations
-        conn = shared_get_db_connection(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception as e:
-        print(f"[ERROR] Database connection failed: {e}", file=sys.stderr)
-        return None
-
-def get_data(query, params=None):
-    try:
-        conn = get_db_connection()
-        if conn:
-            df = pd.read_sql_query(query, conn, params=params)
-            conn.close()
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"[ERROR] Query failed: {e}", file=sys.stderr)
-        return pd.DataFrame()
-
-def get_config_value(key, default="AUTO"):
-    try:
-        conn = get_db_connection()
-        if conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                return row['value']
-    except Exception as e:
-        print(f"[ERROR] Failed to get config '{key}': {e}", file=sys.stderr)
-        pass
-    return default
-
-def set_config_value(key, value):
-    try:
-        conn = get_db_connection()
-        if conn:
-            conn.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", (key, value))
-            conn.commit()
-            conn.close()
-            return True
-    except Exception as e:
-        print(f"[ERROR] Failed to set config '{key}': {e}", file=sys.stderr)
-    return False
-
-# --- Data Fetching Functions ---
-def get_gpu_load():
-    # Estimation based on inference count
-    try:
-        query = """
-            SELECT COUNT(*) as count
-            FROM ai_predictions
-            WHERE timestamp > datetime('now', '-1 minute')
-        """
-        df = get_data(query)
-        if not df.empty:
-            count = df['count'].iloc[0]
-            # Assume max 50 symbols per minute = 100% load
-            load = min(count * 2, 100)
-            return load
-        return 0
-    except:
-        return 0
-
-def get_ticker_tape():
-    query = """
-        SELECT m.symbol, m.close, m.open, m.volume
-        FROM market_data m
-        INNER JOIN (
-            SELECT symbol, MAX(timestamp) as max_ts
-            FROM market_data
-            WHERE timeframe = '5m'
-            GROUP BY symbol
-        ) latest ON m.symbol = latest.symbol AND m.timestamp = latest.max_ts
-        WHERE m.timeframe = '5m'
-        ORDER BY m.volume DESC
-        LIMIT 15
-    """
-    df = get_data(query)
-    if not df.empty:
-        df['pct_change'] = ((df['close'] - df['open']) / df['open']) * 100.0
-        return df
-    return pd.DataFrame()
-
-def get_ensemble_radar():
-    # Latest predictions + Latest RSI
-    query = """
-        WITH LatestPred AS (
-            SELECT p.*
-            FROM ai_predictions p
-            INNER JOIN (
-                SELECT symbol, MAX(timestamp) as max_ts
-                FROM ai_predictions
-                GROUP BY symbol
-            ) max_p ON p.symbol = max_p.symbol AND p.timestamp = max_p.max_ts
-        ),
-        LatestTech AS (
-            SELECT t.symbol, t.rsi_14
-            FROM technical_indicators t
-            INNER JOIN (
-                SELECT symbol, MAX(timestamp) as max_ts
-                FROM technical_indicators
-                GROUP BY symbol
-            ) max_t ON t.symbol = max_t.symbol AND t.timestamp = max_t.max_ts
-        )
-        SELECT
-            p.symbol,
-            p.current_price,
-            p.ensemble_predicted_price,
-            p.small_predicted_price,
-            p.large_predicted_price,
-            t.rsi_14
-        FROM LatestPred p
-        LEFT JOIN LatestTech t ON p.symbol = t.symbol
-    """
-    df = get_data(query)
-    if not df.empty:
-        # Calculate Conviction Score
-        # Magnitude: |(pred - curr) / curr|
-        # Agreement: |(large - small) / curr| (Lower is better)
-
-        df['magnitude'] = (df['ensemble_predicted_price'] - df['current_price']) / df['current_price']
-        df['agreement_diff'] = abs(df['large_predicted_price'] - df['small_predicted_price']) / df['current_price']
-
-        # Heuristic:
-        # Score = (Magnitude * 1000) - (AgreementDiff * 500)
-        # We normalize to 0-100
-        # This is a rough heuristic for "High Move + High Agreement"
-
-        # Simpler approach as requested:
-        # High magnitude + Low divergence = High Conviction
-
-        # Normalized Magnitude (0.0 to 0.05 map to 0-100)
-        mag_score = df['magnitude'].abs() * 2000
-
-        # Normalized Agreement (0.0 to 0.02 map to 100-0)
-        agree_score = (1 - (df['agreement_diff'] * 50)) * 100
-
-        df['conviction'] = (mag_score + agree_score) / 2
-        df['conviction'] = df['conviction'].clip(0, 100)
-
-        # Direction
-        df['direction'] = df.apply(lambda x: 'UP' if x['ensemble_predicted_price'] > x['current_price'] else 'DOWN', axis=1)
-
-        # Agreement Icon
-        def get_icon(row):
-            s_dir = 1 if row['small_predicted_price'] > row['current_price'] else -1
-            l_dir = 1 if row['large_predicted_price'] > row['current_price'] else -1
-            return '🤝' if s_dir == l_dir else '⚠️'
-
-        df['agreement'] = df.apply(get_icon, axis=1)
-
-        return df.sort_values(by='conviction', ascending=False)
-
-    return pd.DataFrame()
-
-def get_technical_heatmap():
-    query = """
-        SELECT t.symbol, t.rsi_14, t.sma_50, t.sma_200, t.timestamp
-        FROM technical_indicators t
-        INNER JOIN (
-            SELECT symbol, MAX(timestamp) as max_ts
-            FROM technical_indicators
-            GROUP BY symbol
-        ) latest ON t.symbol = latest.symbol AND t.timestamp = latest.max_ts
-        ORDER BY t.rsi_14 ASC
-    """
-    return get_data(query)
-
-def get_chart_data(symbol):
-    query = """
-        SELECT m.timestamp, m.open, m.high, m.low, m.close, t.sma_200, t.sma_50, t.rsi_14
-        FROM market_data m
-        LEFT JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
-        WHERE m.symbol = ? AND m.timeframe = '5m'
-        ORDER BY m.timestamp DESC
-        LIMIT 200
-    """
-    df = get_data(query, params=(symbol,))
-    if not df.empty:
-        return df.sort_values(by='timestamp', ascending=True)
-    return pd.DataFrame()
-
-def get_system_logs():
-    query = """
-        SELECT timestamp, service_name, log_level, message
-        FROM system_logs
-        ORDER BY timestamp DESC
-        LIMIT 50
-    """
-    return get_data(query)
-
-def get_ledger():
-    query = "SELECT * FROM executed_trades ORDER BY timestamp DESC LIMIT 20"
-    return get_data(query)
-
-def get_active_signals():
-    query = "SELECT * FROM trade_signals WHERE status IN ('PENDING', 'SIZED') ORDER BY timestamp DESC"
-    return get_data(query)
-
 # --- Renderers ---
 
 def render_sidebar():
+    """Renders the sidebar with system status and controls."""
     st.sidebar.markdown("## 🧬 QUANT TERMINAL")
 
     # --- System Power Mode Control ---
-    current_mode = get_config_value("sleep_mode", "AUTO")
+    current_mode = DataManager.get_config_value("sleep_mode", "AUTO")
 
     mode_map = {
         "AUTO": "🤖 AUTO",
@@ -261,87 +64,98 @@ def render_sidebar():
     }
     reverse_mode_map = {v: k for k, v in mode_map.items()}
 
+    # Check if current_mode is valid, default to AUTO if not
+    default_index = 0
+    if current_mode in mode_map:
+        default_index = list(mode_map.keys()).index(current_mode)
+
     selected_label = st.sidebar.radio(
         "SYSTEM POWER MODE",
         options=list(mode_map.values()),
-        index=list(mode_map.keys()).index(current_mode) if current_mode in mode_map else 0,
+        index=default_index,
         key="power_mode_radio"
     )
 
     # Handle Change
-    new_mode = reverse_mode_map[selected_label]
+    new_mode = reverse_mode_map.get(selected_label, "AUTO")
     if new_mode != current_mode:
-        set_config_value("sleep_mode", new_mode)
+        DataManager.set_config_value("sleep_mode", new_mode)
         st.rerun()
 
     status = get_market_status()
     status_color = "status-open" if status['is_open'] else "status-closed"
+    status_msg = status['status_message'].split(' - ')[0]
+
     st.sidebar.markdown(f"""
-        <div style="display: flex; align-items: center; margin-bottom: 5px;">
-            <span class="{status_color} status-dot"></span>
-            <span style="font-weight: bold; color: #E5E7EB;">{status['status_message'].split(' - ')[0]}</span>
-        </div>
-        <div style="font-size: 0.8em; color: #9CA3AF; margin-bottom: 20px;">
-            Interval: {status['sleep_seconds']}s
-        </div>
-    """, unsafe_allow_html=True)
+<div style="display: flex; align-items: center; margin-bottom: 5px;">
+    <span class="{status_color} status-dot"></span>
+    <span style="font-weight: bold; color: #E5E7EB;">{status_msg}</span>
+</div>
+<div style="font-size: 0.8em; color: #9CA3AF; margin-bottom: 20px;">
+    Interval: {status['sleep_seconds']}s
+</div>
+""", unsafe_allow_html=True)
 
     st.sidebar.divider()
 
     st.sidebar.markdown("### 🖥️ TELEMETRY")
-    load = get_gpu_load()
+    load = DataManager.get_gpu_load()
     st.sidebar.markdown(f"""
-        <div style="font-size: 0.8em; color: #9CA3AF; margin-bottom: 5px;">RTX 5050 INF LOAD</div>
-        <div class="stProgress">
-            <div style="width: 100%; background-color: #374151; height: 8px; border-radius: 4px;">
-                <div style="width: {load}%; background: linear-gradient(90deg, #00F0FF, #FF00FF); height: 100%; border-radius: 4px;"></div>
-            </div>
-        </div>
-        <div style="text-align: right; font-size: 0.7em; color: #00F0FF; margin-top: 2px;">{int(load)}%</div>
-    """, unsafe_allow_html=True)
+<div style="font-size: 0.8em; color: #9CA3AF; margin-bottom: 5px;">RTX 5050 INF LOAD</div>
+<div class="stProgress">
+    <div style="width: 100%; background-color: #374151; height: 8px; border-radius: 4px;">
+        <div style="width: {load}%; background: linear-gradient(90deg, #00F0FF, #FF00FF); height: 100%; border-radius: 4px;"></div>
+    </div>
+</div>
+<div style="text-align: right; font-size: 0.7em; color: #00F0FF; margin-top: 2px;">{int(load)}%</div>
+""", unsafe_allow_html=True)
 
     st.sidebar.divider()
 
     # Symbol Selector
-    symbols = get_data("SELECT DISTINCT symbol FROM market_data ORDER BY symbol")
-    if not symbols.empty:
-        symbol_list = symbols['symbol'].tolist()
+    symbol_list = DataManager.get_available_symbols()
+    if symbol_list:
         # Default to first if not in state
         if 'selected_symbol' not in st.session_state:
             st.session_state.selected_symbol = symbol_list[0]
 
+        # Ensure selected symbol is valid
+        if st.session_state.selected_symbol not in symbol_list:
+             st.session_state.selected_symbol = symbol_list[0]
+
         st.session_state.selected_symbol = st.sidebar.selectbox(
             "ASSET FOCUS",
             symbol_list,
-            index=symbol_list.index(st.session_state.selected_symbol) if st.session_state.selected_symbol in symbol_list else 0
+            index=symbol_list.index(st.session_state.selected_symbol)
         )
 
 def render_ticker_tape():
-    df = get_ticker_tape()
+    """Renders the horizontal ticker tape at the top."""
+    df = DataManager.get_ticker_tape()
     if not df.empty:
         items = []
         for row in df.itertuples():
             color_class = "ticker-up" if row.pct_change >= 0 else "ticker-down"
             sign = "+" if row.pct_change >= 0 else ""
             html = f"""
-                <div class="ticker-item">
-                    <span style="font-weight: bold; color: #FFF;">{row.symbol}</span>
-                    <span style="color: #9CA3AF;">${row.close:.2f}</span>
-                    <span class="{color_class}">{sign}{row.pct_change:.2f}%</span>
-                </div>
+            <div class="ticker-item">
+                <span style="font-weight: bold; color: #FFF;">{row.symbol}</span>
+                <span style="color: #9CA3AF;">${row.close:.2f}</span>
+                <span class="{color_class}">{sign}{row.pct_change:.2f}%</span>
+            </div>
             """
-            items.append(html)
+            items.append(textwrap.dedent(html).strip())
 
         separator = '<div style="width: 20px;"></div>'
         full_html = f"""
-            <div class="ticker-container">
-                {separator.join(items)}
-            </div>
-        """
-        # Bug 2 Fix: unsafe_allow_html=True is mandatory here
+<div class="ticker-container">
+    {separator.join(items)}
+</div>
+"""
         st.markdown(full_html, unsafe_allow_html=True)
 
 def render_radar(df):
+    """Renders the Prediction Radar using AgGrid."""
     st.markdown("### 🔮 PREDICTION RADAR")
     if not df.empty:
         # Configure AgGrid
@@ -397,25 +211,19 @@ def render_radar(df):
             fit_columns_on_grid_load=True
         )
 
-        # Bug 3 Fix: Handle AgGrid selection robustness
         selected_rows = grid_response['selected_rows']
 
-        # Check if selected_rows exists AND has at least one row
-        # (Handling DataFrame emptiness or List emptiness)
-        if selected_rows is not None and len(selected_rows) > 0:
-            import pandas as pd
-            # Handle if AgGrid returns a DataFrame (new versions)
+        # Robust selection handling
+        if selected_rows is not None:
+             # Check if it's a DataFrame (newer AgGrid versions)
             if isinstance(selected_rows, pd.DataFrame):
-                # Ensure we are not accessing an empty dataframe
                 if not selected_rows.empty:
-                    # Using iloc[0] to get the first row, then getting the 'symbol' column
-                    # This assumes 'symbol' is a column name.
                     selected_ticker = selected_rows.iloc[0]['symbol']
                     if selected_ticker != st.session_state.selected_symbol:
                         st.session_state.selected_symbol = selected_ticker
                         st.rerun()
-            # Handle if AgGrid returns a list of dicts (older versions)
-            elif isinstance(selected_rows, list):
+            # Check if it's a list (older AgGrid versions)
+            elif isinstance(selected_rows, list) and len(selected_rows) > 0:
                 selected_ticker = selected_rows[0].get('symbol')
                 if selected_ticker and selected_ticker != st.session_state.selected_symbol:
                     st.session_state.selected_symbol = selected_ticker
@@ -425,11 +233,12 @@ def render_radar(df):
         st.info("No predictions available.")
 
 def render_chart(symbol, radar_df):
+    """Renders the main price chart with Plotly."""
     if not symbol:
         st.info("Select a symbol.")
         return
 
-    df = get_chart_data(symbol)
+    df = DataManager.get_chart_data(symbol)
     if df.empty:
         st.warning(f"No data for {symbol}")
         return
@@ -464,7 +273,7 @@ def render_chart(symbol, radar_df):
         line=dict(color='rgba(0, 229, 255, 0.6)', width=1), name='SMA 50'
     ), row=1, col=1)
 
-    # Chronos T+30 Prediction Line
+    # Prediction Line
     if not pred_row.empty:
         target_price = pred_row.iloc[0]['ensemble_predicted_price']
         last_time = pd.to_datetime(df['timestamp'].iloc[-1])
@@ -478,7 +287,7 @@ def render_chart(symbol, radar_df):
             name='T+30 Forecast'
         ), row=1, col=1)
 
-        # Add marker at target
+        # Target Marker
         fig.add_trace(go.Scatter(
             x=[future_time], y=[target_price],
             mode='markers',
@@ -505,26 +314,24 @@ def render_chart(symbol, radar_df):
         xaxis_rangeslider_visible=False
     )
 
-    # Hide grid
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False)
 
-    # Bug 1 Fix: Rangebreaks for dead air
+    # Hide weekends and after hours
     fig.update_xaxes(
         rangebreaks=[
-            dict(bounds=["sat", "mon"]), # Hide weekends
-            dict(bounds=[16, 9.5], pattern="hour"), # Hide after hours (assuming NY 16:00 to 09:30)
+            dict(bounds=["sat", "mon"]),
+            dict(bounds=[16, 9.5], pattern="hour"),
         ]
     )
 
-    # Deprecation Fix: use_container_width -> width="stretch" (Not strictly valid for plotly_chart yet, sticking to use_container_width=True based on docs, but user asked for fix. Actually use_container_width is correct for st.plotly_chart. The warning was for st.dataframe. I will fix st.dataframe.)
     st.plotly_chart(fig, config={'displayModeBar': False})
 
 def render_heatmap():
+    """Renders the RSI Heatmap using AgGrid."""
     st.markdown("### 🔥 RSI HEATMAP")
-    df = get_technical_heatmap()
+    df = DataManager.get_technical_heatmap()
     if not df.empty:
-        # Configure AgGrid for Heatmap to enable selection
         gb = GridOptionsBuilder.from_dataframe(df[['symbol', 'rsi_14', 'sma_50', 'sma_200']])
         gb.configure_column("symbol", header_name="SYM", width=80, pinned="left")
         gb.configure_column("rsi_14", header_name="RSI", width=80, type=["numericColumn"], valueFormatter="x.toFixed(1)", cellStyle=JsCode("""
@@ -554,18 +361,16 @@ def render_heatmap():
             key='heatmap_grid'
         )
 
-        # Bug 3 Fix: Same fix for Heatmap
         selected_rows = grid_response['selected_rows']
 
-        if selected_rows is not None and len(selected_rows) > 0:
-            import pandas as pd
-            if isinstance(selected_rows, pd.DataFrame):
+        if selected_rows is not None:
+             if isinstance(selected_rows, pd.DataFrame):
                 if not selected_rows.empty:
                     selected_ticker = selected_rows.iloc[0]['symbol']
                     if selected_ticker != st.session_state.selected_symbol:
                         st.session_state.selected_symbol = selected_ticker
                         st.rerun()
-            elif isinstance(selected_rows, list):
+             elif isinstance(selected_rows, list) and len(selected_rows) > 0:
                 selected_ticker = selected_rows[0].get('symbol')
                 if selected_ticker and selected_ticker != st.session_state.selected_symbol:
                     st.session_state.selected_symbol = selected_ticker
@@ -574,11 +379,12 @@ def render_heatmap():
         st.info("No technical data.")
 
 def render_logs():
-    logs = get_system_logs()
+    """Renders system logs in a terminal-like window."""
+    logs = DataManager.get_system_logs()
 
     html_content = ["""
-        <div style="background-color: #000; color: #00FF00; font-family: 'JetBrains Mono'; font-size: 0.8em; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #333;">
-    """]
+<div style="background-color: #000; color: #00FF00; font-family: 'JetBrains Mono'; font-size: 0.8em; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #333;">
+"""]
 
     if not logs.empty:
         for _, row in logs.iterrows():
@@ -587,7 +393,8 @@ def render_logs():
             if row['log_level'] == 'WARNING': color = "#FFC400"
 
             try:
-                ts = row['timestamp'].split('T')[1].split('.')[0] # Extract HH:MM:SS
+                # Extract HH:MM:SS from ISO timestamp
+                ts = row['timestamp'].split('T')[1].split('.')[0]
             except:
                 ts = row['timestamp']
 
@@ -601,6 +408,7 @@ def render_logs():
 
 # --- Main Layout ---
 def main():
+    """Main application entry point."""
     # 5-second Auto Refresh
     st_autorefresh(interval=5000, limit=None, key="market_pulse")
 
@@ -613,7 +421,7 @@ def main():
     # Row 1
     c1, c2 = st.columns([4, 6]) # 40% / 60% split
 
-    radar_data = get_ensemble_radar()
+    radar_data = DataManager.get_ensemble_radar()
 
     with c1:
         render_radar(radar_data)
@@ -635,10 +443,10 @@ def main():
         tab1, tab2, tab3 = st.tabs(["ACTIVE SIGNALS", "EXECUTION LEDGER", "SWARM LOGS"])
 
         with tab1:
-            st.dataframe(get_active_signals(), height=300)
+            st.dataframe(DataManager.get_active_signals(), height=300)
 
         with tab2:
-            st.dataframe(get_ledger(), height=300)
+            st.dataframe(DataManager.get_ledger(), height=300)
 
         with tab3:
             render_logs()

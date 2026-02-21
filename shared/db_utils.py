@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import sys
 
 # Define the path to the database
 # Using absolute path resolution relative to this file
@@ -27,18 +28,44 @@ def get_db_connection(db_path=None, timeout=60.0):
     if not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
 
-    conn = sqlite3.connect(db_path, timeout=timeout)
-
-    # Enable WAL mode for better concurrency
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;") # Recommended for WAL mode
-        conn.execute("PRAGMA busy_timeout=5000;") # Wait up to 5000ms for a lock
-    except sqlite3.Error:
-        # Might fail if database is locked, but connection should handle it via timeout
-        pass
+        conn = sqlite3.connect(db_path, timeout=timeout)
+        conn.row_factory = sqlite3.Row  # Enable column access by name
 
-    return conn
+        # Enable WAL mode for better concurrency
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")  # Recommended for WAL mode
+        conn.execute("PRAGMA busy_timeout=5000;")  # Wait up to 5000ms for a lock
+        return conn
+    except sqlite3.Error as e:
+        print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
+        return None
+
+def execute_query(query, params=(), db_path=None):
+    """
+    Executes a read-only query and returns the results.
+
+    Args:
+        query (str): The SQL query to execute.
+        params (tuple, optional): Parameters to substitute into the query. Defaults to ().
+        db_path (str, optional): Path to the database file. Defaults to shared.db_utils.DB_PATH.
+
+    Returns:
+        list: A list of sqlite3.Row objects.
+    """
+    conn = get_db_connection(db_path)
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            conn.close()
+            return results
+        except sqlite3.Error as e:
+            print(f"[ERROR] Query failed: {query} with params {params}. Error: {e}", file=sys.stderr)
+            conn.close()
+            return []
+    return []
 
 def log_system_event(service_name, log_level, message):
     """
@@ -53,16 +80,16 @@ def log_system_event(service_name, log_level, message):
 
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        if conn:
+            cursor = conn.cursor()
+            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            cursor.execute("""
+                INSERT INTO system_logs (timestamp, service_name, log_level, message)
+                VALUES (?, ?, ?, ?)
+            """, (timestamp, service_name, log_level, message))
 
-        cursor.execute("""
-            INSERT INTO system_logs (timestamp, service_name, log_level, message)
-            VALUES (?, ?, ?, ?)
-        """, (timestamp, service_name, log_level, message))
-
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
     except Exception as e:
-        print(f"Failed to log system event: {e}")
+        print(f"[ERROR] Failed to log system event: {e}", file=sys.stderr)
