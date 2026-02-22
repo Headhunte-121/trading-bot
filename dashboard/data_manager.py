@@ -112,7 +112,7 @@ class DataManager:
             query = """
                 SELECT COUNT(*) as count
                 FROM ai_predictions
-                WHERE timestamp > (NOW() - INTERVAL '1 minute')
+                WHERE timestamp::TIMESTAMP > (NOW() - INTERVAL '1 minute')
             """
             df = DataManager._fetch_query(query)
             if not df.empty:

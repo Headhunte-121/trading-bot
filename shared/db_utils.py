@@ -5,10 +5,21 @@ Dependencies: psycopg2, os, sys, datetime
 """
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import numpy as np
+from psycopg2.extensions import register_adapter, AsIs
 import os
 import sys
 import datetime
 import time
+
+def add_numpy_adapters():
+    """Registers Numpy types with Psycopg2 to allow automatic adaptation."""
+    register_adapter(np.float64, AsIs)
+    register_adapter(np.float32, AsIs)
+    register_adapter(np.int64, AsIs)
+    register_adapter(np.int32, AsIs)
+
+add_numpy_adapters()
 
 # Define the path to the database (Deprecated for Postgres, kept for reference if needed)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
