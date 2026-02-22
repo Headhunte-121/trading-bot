@@ -10,6 +10,10 @@ import pandas as pd
 import datetime
 import time
 import concurrent.futures
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -197,13 +201,13 @@ def get_hot_list():
     return hot_list
 
 
-def initial_sync():
+def sync_daily_data():
     """
-    Runs once at startup to fetch 2 years of Daily (1d) data.
-    This ensures that the SMA 200 (Daily) can be calculated immediately.
+    Fetches 2 years of Daily (1d) data for all symbols.
+    Ensures SMA 200 and other daily indicators are up to date.
     """
-    print("🚀 Starting Initial Sync (Daily Data for SMA 200)...")
-    log_system_event("MarketHarvester", "INFO", "Starting Initial Sync (Daily Data for SMA 200)")
+    print("🚀 Starting Daily Data Sync (1d for SMA 200)...")
+    log_system_event("MarketHarvester", "INFO", "Starting Daily Data Sync (Daily Data for SMA 200)")
 
     # Sync SPY (Daily) - Macro Benchmark
     print("🇺🇸 Syncing SPY Daily Data...")
@@ -218,8 +222,28 @@ def initial_sync():
             count += 1
         time.sleep(0.5)  # Rate limiting
 
-    print(f"✅ Initial Sync Complete. {count} symbols synced.")
-    log_system_event("MarketHarvester", "INFO", f"Initial Sync Complete. {count} symbols synced.")
+    print(f"✅ Daily Sync Complete. {count} symbols synced.")
+    log_system_event("MarketHarvester", "INFO", f"Daily Sync Complete. {count} symbols synced.")
+
+
+def initial_sync():
+    """
+    Runs once at startup to fetch 2 years of Daily (1d) data.
+    """
+    print("🚀 Starting Initial Sync...")
+    sync_daily_data()
+
+
+def check_eod_sync(current_ny_time, last_sync_date):
+    """
+    Checks if it is time to run the End-of-Day (EOD) sync.
+    Trigger window: Weekdays, 16:00 - 16:15 ET.
+    """
+    if current_ny_time.weekday() < 5:  # Monday=0, Friday=4
+        if current_ny_time.hour == 16 and 0 <= current_ny_time.minute <= 15:
+            if last_sync_date != current_ny_time.date():
+                return True
+    return False
 
 
 def process_symbol_sync(symbol, hot_list):
@@ -290,8 +314,21 @@ def main():
     # 1. Initial Sync (One-time)
     initial_sync()
 
+    # Track last EOD sync date to prevent redundancy
+    last_eod_sync_date = None
+
     # 2. Intraday Loop
     while True:
+        # Check for End-of-Day Sync (Priority Check)
+        try:
+            ny_now = datetime.datetime.now(ZoneInfo("America/New_York"))
+            if check_eod_sync(ny_now, last_eod_sync_date):
+                 print("🌅 Market Just Closed! Running End-of-Day Daily Sync...")
+                 sync_daily_data()
+                 last_eod_sync_date = ny_now.date()
+        except Exception as e:
+            print(f"⚠️ Error in EOD Check: {e}")
+
         # Check Force Awake Weekend Loop
         config_mode = get_config_value("sleep_mode", "AUTO")
         raw_status = get_raw_market_status()
