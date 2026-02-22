@@ -30,3 +30,4 @@ streamlit-autorefresh
 # Environment
 python-dotenv
 urllib3<2
+numpy

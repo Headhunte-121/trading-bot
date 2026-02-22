@@ -7,7 +7,11 @@ import pandas as pd
 import pandas_ta as ta
 import os
 import sys
+import warnings
 from datetime import datetime, timezone
+
+# Suppress the specific Pandas/SQLAlchemy warning
+warnings.filterwarnings("ignore", message=".*pandas only supports SQLAlchemy connectable.*")
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
