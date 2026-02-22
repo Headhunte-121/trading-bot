@@ -13,7 +13,7 @@ from chronos import ChronosPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
-from shared.smart_sleep import get_sleep_seconds, smart_sleep
+from shared.smart_sleep import get_sleep_time_to_next_candle, smart_sleep
 
 MODEL_SMALL = "amazon/chronos-t5-small"
 MODEL_LARGE = "amazon/chronos-t5-large"
@@ -225,6 +225,7 @@ if __name__ == "__main__":
     while True:
         run_predictions(p_small_model, p_large_model)
 
-        sleep_duration = get_sleep_seconds()
+        # AI runs at :20 (20s offset, same as TA)
+        sleep_duration = get_sleep_time_to_next_candle(offset_seconds=20)
         print(f"💤 Sleeping for {sleep_duration} seconds...")
         smart_sleep(sleep_duration)

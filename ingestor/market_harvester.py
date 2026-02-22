@@ -9,12 +9,13 @@ import yfinance as yf
 import pandas as pd
 import datetime
 import time
+import concurrent.futures
 
 # Ensure shared package is available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.db_utils import get_db_connection, log_system_event
 from shared.config import SYMBOLS
-from shared.smart_sleep import get_sleep_seconds, smart_sleep
+from shared.smart_sleep import get_sleep_seconds, get_sleep_time_to_next_candle, smart_sleep, get_raw_market_status, get_config_value
 
 
 def get_last_timestamp(cursor, symbol, timeframe):
@@ -221,12 +222,37 @@ def initial_sync():
     log_system_event("MarketHarvester", "INFO", f"Initial Sync Complete. {count} symbols synced.")
 
 
+def process_symbol_sync(symbol, hot_list):
+    """
+    Helper function to sync a single symbol, used for parallel processing.
+    """
+    c_1m = 0
+    c_5m = 0
+
+    # Determine timeframe strategy
+    if symbol in hot_list:
+        # Fetch 1m for Hot List (High Frequency Monitoring)
+        if fetch_and_store(symbol, "1m", "5d", "1m", limit=None):
+            c_1m = 1
+
+        # ALSO fetch 5m for Strategy compatibility
+        if fetch_and_store(symbol, "5m", "5d", "5m", limit=None):
+            c_5m = 1
+    else:
+        # Standard 5m fetch
+        if fetch_and_store(symbol, "5m", "5d", "5m", limit=None):
+            c_5m = 1
+
+    return c_1m, c_5m
+
+
 def intraday_sync():
     """
     Executes the main data fetching loop.
     Implements 'Eagle Eye' resolution:
     - Hot List symbols -> Fetched at 1m AND 5m resolution.
     - Standard symbols -> Fetched at 5m resolution only.
+    Uses ThreadPoolExecutor for parallel fetching to reduce latency.
     """
     print("🔄 Running Intraday Sync (Eagle Eye Mode)...")
 
@@ -237,28 +263,22 @@ def intraday_sync():
     count_5m = 0
     count_1m = 0
 
-    # 1. Fetch SPY (5m) - Essential for Macro Filter
+    # 1. Fetch SPY (5m) - Essential for Macro Filter (Serial to ensure priority)
     fetch_and_store("SPY", "5m", "5d", "5m", limit=None)
-    time.sleep(0.5)
 
-    for symbol in SYMBOLS:
-        # Determine timeframe strategy
-        if symbol in hot_list:
-            # Fetch 1m for Hot List (High Frequency Monitoring)
-            if fetch_and_store(symbol, "1m", "5d", "1m", limit=None):
-                count_1m += 1
-            time.sleep(0.5)
+    # 2. Parallel Fetch for SYMBOLS
+    # Using 5 workers to balance speed and rate limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_symbol = {executor.submit(process_symbol_sync, sym, hot_list): sym for sym in SYMBOLS}
 
-            # ALSO fetch 5m for Strategy compatibility
-            if fetch_and_store(symbol, "5m", "5d", "5m", limit=None):
-                count_5m += 1
-            time.sleep(0.5)
-
-        else:
-            # Standard 5m fetch
-            if fetch_and_store(symbol, "5m", "5d", "5m", limit=None):
-                count_5m += 1
-            time.sleep(0.5)
+        for future in concurrent.futures.as_completed(future_to_symbol):
+            try:
+                c1, c5 = future.result()
+                count_1m += c1
+                count_5m += c5
+            except Exception as e:
+                sym = future_to_symbol[future]
+                print(f"❌ Error syncing {sym}: {e}")
 
     print(f"✅ Synced: {count_5m} symbols (5m), {count_1m} symbols (1m).")
     log_system_event("MarketHarvester", "INFO", f"Synced: {count_5m} symbols (5m), {count_1m} symbols (1m)")
@@ -272,18 +292,28 @@ def main():
 
     # 2. Intraday Loop
     while True:
+        # Check Force Awake Weekend Loop
+        config_mode = get_config_value("sleep_mode", "AUTO")
+        raw_status = get_raw_market_status()
+
+        if config_mode == "FORCE_AWAKE" and not raw_status['is_open']:
+             print("⚡ Force Awake Active but Market Closed. Sleeping 60s to prevent spam...")
+             smart_sleep(60)
+             continue
+
         # Check sleep status BEFORE starting a sync cycle
-        sleep_sec = get_sleep_seconds()
+        # Use sync logic with 0 offset for Harvester (Starts at :00)
+        sleep_sec = get_sleep_time_to_next_candle(offset_seconds=0)
 
         if sleep_sec >= 3600:
              print(f"💤 Market Closed/Sleeping. Waiting {sleep_sec}s...")
              smart_sleep(sleep_sec)
         else:
-             # Market Open or Force Awake
+             # Market Open or Force Awake (and Market Open)
              intraday_sync()
 
              # Post-sync sleep
-             post_sync_sleep = get_sleep_seconds()
+             post_sync_sleep = get_sleep_time_to_next_candle(offset_seconds=0)
              print(f"💤 Cycle Complete. Sleeping {post_sync_sleep}s...")
              smart_sleep(post_sync_sleep)
 
