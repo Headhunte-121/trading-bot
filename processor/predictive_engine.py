@@ -84,7 +84,7 @@ def fetch_context_data(conn):
             query = """
                 SELECT timestamp, close
                 FROM market_data
-                WHERE symbol = ? AND timeframe = '5m'
+                WHERE symbol = %s AND timeframe = '5m'
                 ORDER BY timestamp DESC
                 LIMIT 64
             """
@@ -202,9 +202,15 @@ def run_predictions(pipeline_small, pipeline_large):
         # Write to DB
         cursor = conn.cursor()
         cursor.executemany("""
-            INSERT OR REPLACE INTO ai_predictions
+            INSERT INTO ai_predictions
             (symbol, timestamp, current_price, small_predicted_price, large_predicted_price, ensemble_predicted_price, ensemble_pct_change)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, timestamp) DO UPDATE SET
+                current_price = excluded.current_price,
+                small_predicted_price = excluded.small_predicted_price,
+                large_predicted_price = excluded.large_predicted_price,
+                ensemble_predicted_price = excluded.ensemble_predicted_price,
+                ensemble_pct_change = excluded.ensemble_pct_change
         """, results)
         conn.commit()
         print(f"✅ Saved {len(results)} ensemble predictions.")

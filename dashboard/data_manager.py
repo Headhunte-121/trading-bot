@@ -62,7 +62,7 @@ class DataManager:
             conn = get_db_connection()
             if conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+                cursor.execute("SELECT value FROM system_config WHERE key = %s", (key,))
                 row = cursor.fetchone()
                 conn.close()
                 if row:
@@ -86,7 +86,11 @@ class DataManager:
         try:
             conn = get_db_connection()
             if conn:
-                conn.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", (key, value))
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO system_config (key, value) VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value = excluded.value
+                """, (key, value))
                 conn.commit()
                 conn.close()
                 return True
@@ -264,7 +268,7 @@ class DataManager:
             SELECT m.timestamp, m.open, m.high, m.low, m.close, t.sma_200, t.sma_50, t.rsi_14
             FROM market_data m
             LEFT JOIN technical_indicators t ON m.symbol = t.symbol AND m.timestamp = t.timestamp
-            WHERE m.symbol = ? AND m.timeframe = '5m'
+            WHERE m.symbol = %s AND m.timeframe = '5m'
             ORDER BY m.timestamp DESC
             LIMIT 200
         """

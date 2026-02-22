@@ -5,7 +5,6 @@ Dependencies: alpaca_trade_api, sqlite3, shared.db_utils
 """
 import os
 import time
-import sqlite3
 import datetime
 import sys
 import traceback
@@ -173,14 +172,14 @@ class AlpacaExecutor:
                             sell_order = self._safe_api_call(self.api.submit_order, req)
 
                             if sell_order:
-                                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
+                                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = %s", (signal_id,))
                                 conn.commit()
                                 self._log("INFO", f"   -> Signal {signal_id} ({symbol}) EXECUTED (Sell Submitted).")
                             else:
                                 self._log("ERROR", "   -> Failed to submit Sell order.")
                         else:
                             self._log("WARNING", f"   -> No open position for {symbol}. Marking signal as EXECUTED (Nothing to sell).")
-                            cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
+                            cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = %s", (signal_id,))
                             conn.commit()
 
                     except Exception as e:
@@ -202,14 +201,14 @@ class AlpacaExecutor:
 
                     if buy_order:
                         # Update status to SUBMITTED
-                        cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = ? WHERE id = ?", (buy_order.id, signal_id))
+                        cursor.execute("UPDATE trade_signals SET status = 'SUBMITTED', order_id = %s WHERE id = %s", (buy_order.id, signal_id))
                         conn.commit()
                         self._log("INFO", f"   -> Signal {signal_id} ({symbol}) moved to SUBMITTED. Order ID: {buy_order.id}")
                     else:
                         # Mark as FAILED if API call failed (unless Circuit Breaker tripped)
                         if not self.circuit_breaker_tripped:
                             self._log("ERROR", f"❌ Failed to submit BUY order for {symbol}.")
-                            cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                            cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = %s", (signal_id,))
                             conn.commit()
 
         except Exception as e:
@@ -245,7 +244,7 @@ class AlpacaExecutor:
 
                 if not order_id:
                     self._log("WARNING", f"⚠️ Signal {signal_id} ({symbol}) is SUBMITTED but has no order_id. Marking FAILED.")
-                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = %s", (signal_id,))
                     conn.commit()
                     continue
 
@@ -272,7 +271,7 @@ class AlpacaExecutor:
 
                 elif status in ['canceled', 'rejected', 'expired']:
                     self._log("WARNING", f"❌ Order {order_id} ({symbol}) was {status}. Marking signal FAILED.")
-                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = ?", (signal_id,))
+                    cursor.execute("UPDATE trade_signals SET status = 'FAILED' WHERE id = %s", (signal_id,))
                     conn.commit()
 
         except Exception as e:
@@ -285,7 +284,7 @@ class AlpacaExecutor:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO executed_trades (symbol, timestamp, price, qty, side, signal_type)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             """, (symbol, timestamp_str, float(price), float(qty), side, signal_type))
             conn.commit()
         except Exception as e:
@@ -353,7 +352,7 @@ class AlpacaExecutor:
             if stop_order:
                 self._log("INFO", f"✅ Trailing Stop submitted (Attempt {attempt}): {stop_order.id}")
                 cursor = conn.cursor()
-                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = ?", (signal_id,))
+                cursor.execute("UPDATE trade_signals SET status = 'EXECUTED' WHERE id = %s", (signal_id,))
                 conn.commit()
                 success = True
                 break
@@ -365,7 +364,7 @@ class AlpacaExecutor:
         if not success:
             self._log("CRITICAL", f"❌ FAILED TO PROTECT POSITION: Could not submit Trailing Stop for {symbol} after {max_retries} attempts.")
             cursor = conn.cursor()
-            cursor.execute("UPDATE trade_signals SET status = 'EXECUTED_NO_STOP' WHERE id = ?", (signal_id,))
+            cursor.execute("UPDATE trade_signals SET status = 'EXECUTED_NO_STOP' WHERE id = %s", (signal_id,))
             conn.commit()
 
     def run(self):
@@ -386,8 +385,6 @@ class AlpacaExecutor:
                     time.sleep(5)
                     continue
 
-                conn.row_factory = sqlite3.Row
-
                 # 1. Process Sized Signals (Buy)
                 self.process_sized_signals(conn)
 
@@ -396,8 +393,8 @@ class AlpacaExecutor:
 
                 # 3. Check for Pending Orders to determine Sleep Mode
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM trade_signals WHERE status = 'SUBMITTED'")
-                pending_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) as count FROM trade_signals WHERE status = 'SUBMITTED'")
+                pending_count = cursor.fetchone()['count']
 
                 if pending_count > 0:
                     # If we have pending orders, we must stay awake to monitor fills

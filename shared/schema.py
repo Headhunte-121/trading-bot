@@ -1,9 +1,9 @@
 """
 Service: Database Schema Management
 Role: Manages database initialization, table creation, and schema migrations.
-Dependencies: sqlite3, shared.db_utils
+Dependencies: psycopg2, shared.db_utils
 """
-import sqlite3
+import psycopg2
 import os
 import sys
 import re
@@ -12,7 +12,7 @@ import re
 if __name__ == "__main__":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.db_utils import get_db_connection, DB_PATH
+from shared.db_utils import get_db_connection
 
 
 def _is_safe_identifier(identifier):
@@ -36,10 +36,10 @@ def add_column_if_not_exists(cursor, table, column, definition):
     Adds a column to a table if it does not already exist.
 
     Args:
-        cursor: SQLite cursor object.
+        cursor: Postgres cursor object.
         table (str): Table name.
         column (str): Column name.
-        definition (str): Column definition (e.g., "REAL", "TEXT").
+        definition (str): Column definition (e.g., "DOUBLE PRECISION", "TEXT").
     """
     if not _is_safe_identifier(table) or not _is_safe_identifier(column):
         print(f"Error: Invalid identifier '{table}' or '{column}'.")
@@ -50,21 +50,20 @@ def add_column_if_not_exists(cursor, table, column, definition):
         return
 
     try:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        print(f"Added column '{column}' to table '{table}'.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e):
-            pass  # Column already exists
-        else:
-            print(f"Error adding column '{column}' to table '{table}': {e}")
+        # Postgres supports IF NOT EXISTS for ADD COLUMN since 9.6
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+        print(f"Ensured column '{column}' exists in table '{table}'.")
+    except psycopg2.Error as e:
+        print(f"Error adding column '{column}' to table '{table}': {e}")
 
 
 def setup_database():
     """Initializes the database and creates tables if they do not exist."""
-    print(f"Setting up database at {DB_PATH}...")
+    print("Setting up Postgres database...")
 
     conn = get_db_connection()
     if not conn:
+        print("Failed to connect to database during setup.")
         return
 
     cursor = conn.cursor()
@@ -82,11 +81,11 @@ def setup_database():
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             timeframe TEXT NOT NULL,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume REAL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             PRIMARY KEY (symbol, timestamp, timeframe)
         )
     """)
@@ -99,13 +98,13 @@ def setup_database():
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             timeframe TEXT NOT NULL DEFAULT '5m',
-            rsi_14 REAL,
-            sma_50 REAL,
-            sma_200 REAL,
-            lower_bb REAL,
-            vwap REAL,
-            atr_14 REAL,
-            volume_sma_20 REAL,
+            rsi_14 DOUBLE PRECISION,
+            sma_50 DOUBLE PRECISION,
+            sma_200 DOUBLE PRECISION,
+            lower_bb DOUBLE PRECISION,
+            vwap DOUBLE PRECISION,
+            atr_14 DOUBLE PRECISION,
+            volume_sma_20 DOUBLE PRECISION,
             PRIMARY KEY (symbol, timestamp, timeframe)
         )
     """)
@@ -114,14 +113,14 @@ def setup_database():
     # --- AI PREDICTIONS ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            current_price REAL,
-            small_predicted_price REAL,
-            large_predicted_price REAL,
-            ensemble_predicted_price REAL,
-            ensemble_pct_change REAL,
+            current_price DOUBLE PRECISION,
+            small_predicted_price DOUBLE PRECISION,
+            large_predicted_price DOUBLE PRECISION,
+            ensemble_predicted_price DOUBLE PRECISION,
+            ensemble_pct_change DOUBLE PRECISION,
             UNIQUE(symbol, timestamp)
         )
     """)
@@ -129,26 +128,26 @@ def setup_database():
     # --- TRADE SIGNALS ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trade_signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             signal_type TEXT,
-            size REAL,
-            stop_loss REAL,
+            size DOUBLE PRECISION,
+            stop_loss DOUBLE PRECISION,
             status TEXT,
             order_id TEXT
         )
     """)
-    add_column_if_not_exists(cursor, "trade_signals", "atr", "REAL")
+    add_column_if_not_exists(cursor, "trade_signals", "atr", "DOUBLE PRECISION")
 
     # --- EXECUTED TRADES ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS executed_trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            price REAL,
-            qty REAL,
+            price DOUBLE PRECISION,
+            qty DOUBLE PRECISION,
             side TEXT
         )
     """)
@@ -157,7 +156,7 @@ def setup_database():
     # --- SYSTEM LOGS ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             timestamp TEXT NOT NULL,
             service_name TEXT NOT NULL,
             log_level TEXT NOT NULL,
@@ -173,7 +172,7 @@ def setup_database():
         )
     """)
     # Initialize default configuration
-    cursor.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('sleep_mode', 'AUTO')")
+    cursor.execute("INSERT INTO system_config (key, value) VALUES ('sleep_mode', 'AUTO') ON CONFLICT (key) DO NOTHING")
 
     conn.commit()
     conn.close()

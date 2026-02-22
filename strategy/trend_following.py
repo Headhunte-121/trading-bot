@@ -3,7 +3,6 @@ Service: Strategy Engine
 Role: Evaluates market data against a 3-Tier strategy to generate BUY signals.
 Dependencies: sqlite3, shared.db_utils, shared.config
 """
-import sqlite3
 import os
 import sys
 import datetime
@@ -72,7 +71,7 @@ def evaluate_exits(cursor):
                   ON m.symbol = p.symbol
                   AND m.timestamp = p.timestamp
                 WHERE
-                    m.symbol = ?
+                    m.symbol = %s
                     AND m.timeframe = '5m'
                 ORDER BY m.timestamp DESC
                 LIMIT 1
@@ -90,7 +89,7 @@ def evaluate_exits(cursor):
 
             # Check for existing PENDING signals for this symbol to avoid spamming
             cursor.execute(
-                "SELECT id FROM trade_signals WHERE symbol = ? AND status = 'PENDING' AND signal_type LIKE '%EXIT%'",
+                "SELECT id FROM trade_signals WHERE symbol = %s AND status = 'PENDING' AND signal_type LIKE '%EXIT%'",
                 (symbol,)
             )
             if cursor.fetchone():
@@ -116,7 +115,7 @@ def evaluate_exits(cursor):
                 cursor.execute("""
                     INSERT INTO trade_signals
                     (symbol, timestamp, signal_type, status, size, stop_loss, atr)
-                    VALUES (?, ?, ?, 'PENDING', 0, NULL, NULL)
+                    VALUES (%s, %s, %s, 'PENDING', 0, NULL, NULL)
                 """, (symbol, signal_timestamp, exit_signal))
 
                 cursor.connection.commit()
@@ -192,7 +191,7 @@ def run_strategy():
     conn = get_db_connection()
     if not conn:
         return
-    conn.row_factory = sqlite3.Row
+    # conn.row_factory = sqlite3.Row # Removed, handled by get_db_connection
     cursor = conn.cursor()
 
     try:
@@ -229,7 +228,7 @@ def run_strategy():
               AND m.timestamp = p.timestamp
             WHERE
                 m.timeframe = '5m'
-                AND m.timestamp >= ?
+                AND m.timestamp >= %s
                 AND m.symbol != 'SPY'
             ORDER BY m.timestamp DESC
         """
@@ -260,7 +259,7 @@ def run_strategy():
 
             # Check for duplicate signal
             cursor.execute(
-                "SELECT id FROM trade_signals WHERE symbol = ? AND timestamp = ?",
+                "SELECT id FROM trade_signals WHERE symbol = %s AND timestamp = %s",
                 (symbol, timestamp)
             )
             if cursor.fetchone():
@@ -299,7 +298,7 @@ def run_strategy():
                 cursor.execute("""
                     INSERT INTO trade_signals
                     (symbol, timestamp, signal_type, status, size, stop_loss, atr)
-                    VALUES (?, ?, ?, 'PENDING', NULL, NULL, ?)
+                    VALUES (%s, %s, %s, 'PENDING', NULL, NULL, %s)
                 """, (symbol, timestamp, signal_type, atr))
 
                 conn.commit()

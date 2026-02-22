@@ -36,11 +36,11 @@ def get_last_timestamp(cursor, symbol, timeframe):
     """
     try:
         cursor.execute(
-            "SELECT MAX(timestamp) FROM market_data WHERE symbol = ? AND timeframe = ?",
+            "SELECT MAX(timestamp) as max_ts FROM market_data WHERE symbol = %s AND timeframe = %s",
             (symbol, timeframe)
         )
         result = cursor.fetchone()
-        return result[0] if result else None
+        return result['max_ts'] if result else None
     except Exception:
         return None
 
@@ -126,9 +126,10 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
         if rows_to_insert:
             # INSERT OR IGNORE to handle overlaps
             cursor.executemany('''
-                INSERT OR IGNORE INTO market_data
+                INSERT INTO market_data
                 (symbol, timestamp, timeframe, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, timestamp, timeframe) DO NOTHING
             ''', rows_to_insert)
             conn.commit()
             return True
