@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir \
     bitsandbytes \
     accelerate \
     yfinance \
-    alpaca-trade-api \
+    "urllib3<2" \
     git+https://github.com/amazon-science/chronos-forecasting.git
 
 # 3. The "Delta" Layer
