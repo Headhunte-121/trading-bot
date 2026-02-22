@@ -112,11 +112,12 @@ def fetch_and_store(symbol, timeframe, period, interval, limit=None):
                 timestamp = ts_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
                 # Handle yfinance sometimes missing columns or having different casing
-                open_price = row.get('Open', 0.0)
-                high_price = row.get('High', 0.0)
-                low_price = row.get('Low', 0.0)
-                close_price = row.get('Close', 0.0)
-                volume = row.get('Volume', 0)
+                # CRITICAL: Convert numpy types to native python float for Postgres
+                open_price = float(row.get('Open', 0.0))
+                high_price = float(row.get('High', 0.0))
+                low_price = float(row.get('Low', 0.0))
+                close_price = float(row.get('Close', 0.0))
+                volume = float(row.get('Volume', 0))
 
                 rows_to_insert.append((symbol, timestamp, timeframe, open_price, high_price, low_price, close_price, volume))
 
