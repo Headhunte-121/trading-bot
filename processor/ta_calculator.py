@@ -183,7 +183,7 @@ class TACalculator:
             df_final['timeframe'] = '5m'
 
             # Restore timestamp column (string format)
-            df_final['timestamp'] = df_final.index.strftime('%Y-%m-%d %H:%M:%S')
+            df_final['timestamp'] = df_final.index.strftime('%Y-%m-%dT%H:%M:%SZ')
 
             # Select and reorder columns
             cols_to_keep = [
