@@ -6,7 +6,6 @@ Dependencies: time, datetime, zoneinfo, shared.db_utils
 import time
 import sys
 import os
-import sqlite3
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
@@ -44,13 +43,10 @@ def get_config_value(key, default):
             return default
 
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+        cursor.execute("SELECT value FROM system_config WHERE key = %s", (key,))
         row = cursor.fetchone()
         if row:
-            return row[0]
-        return default
-    except sqlite3.OperationalError:
-        # Database locked or busy
+            return row['value']
         return default
     except Exception as e:
         print(f"Error reading config: {e}")

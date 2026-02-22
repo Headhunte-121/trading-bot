@@ -1,69 +1,60 @@
 """
 Service: Shared Utilities
 Role: Provides core database connectivity and system logging for the Deep Quant Terminal.
-Dependencies: sqlite3, os, sys, datetime
+Dependencies: psycopg2, os, sys, datetime
 """
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
 import sys
 import datetime
 import time
 
-# Define the path to the database
-# Using absolute path resolution relative to this file
+# Define the path to the database (Deprecated for Postgres, kept for reference if needed)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_NAME = "trade_history.db"
-DB_PATH = os.path.join(DATA_DIR, DB_NAME)
 
 
 def get_db_connection(db_path=None, timeout=60.0, log_error=True):
     """
-    Establishes a connection to the SQLite database with configured timeout and journal mode.
-    Implements a retry mechanism for transient errors (e.g., locking).
+    Establishes a connection to the PostgreSQL database using environment variables.
 
     Args:
-        db_path (str, optional): Path to the database file. Defaults to shared.db_utils.DB_PATH.
-        timeout (float): Timeout in seconds for waiting for the database lock.
+        db_path (str, optional): Ignored. Kept for backward compatibility.
+        timeout (float): Ignored. Postgres handles timeouts differently.
         log_error (bool): Whether to log connection errors to stderr. Defaults to True.
 
     Returns:
-        sqlite3.Connection: A connection object, or None if connection fails.
+        psycopg2.extensions.connection: A connection object, or None if connection fails.
     """
-    if db_path is None:
-        db_path = DB_PATH
-
-    # Ensure the directory exists
-    db_dir = os.path.dirname(db_path)
-    if not os.path.exists(db_dir):
-        os.makedirs(db_dir, exist_ok=True)
-
     max_retries = 3
-    retry_delay = 0.5
+    retry_delay = 1.0
 
     for attempt in range(1, max_retries + 1):
         try:
-            conn = sqlite3.connect(db_path, timeout=timeout)
-            conn.row_factory = sqlite3.Row  # Enable column access by name
-
-            # Enable WAL mode for better concurrency
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")  # Recommended for WAL mode
-            conn.execute("PRAGMA busy_timeout=5000;")  # Wait up to 5000ms for a lock
+            conn = psycopg2.connect(
+                host=os.getenv("DB_HOST", "postgres_db"),
+                port=os.getenv("DB_PORT", "5432"),
+                database=os.getenv("DB_NAME", "trade_history"),
+                user=os.getenv("DB_USER", "quant_user"),
+                password=os.getenv("DB_PASS", "quant_password_123"),
+                cursor_factory=RealDictCursor
+            )
+            # Auto-commit is NOT enabled by default in psycopg2 (unlike sqlite3 in some wrappers, but python sqlite3 also requires commit)
+            # We will rely on explicit commits as before.
             return conn
-        except sqlite3.OperationalError as e:
-            # Handle transient locking or file access errors
+        except psycopg2.OperationalError as e:
+            # Handle transient connection errors
             if attempt < max_retries:
                 time.sleep(retry_delay)
                 continue
             else:
                 if log_error:
-                    print(f"[ERROR] Failed to connect to database at {db_path} after {max_retries} attempts: {e}", file=sys.stderr)
+                    print(f"[ERROR] Failed to connect to Postgres after {max_retries} attempts: {e}", file=sys.stderr)
                 return None
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             # Non-recoverable error
             if log_error:
-                print(f"[ERROR] Failed to connect to database at {db_path}: {e}", file=sys.stderr)
+                print(f"[ERROR] Failed to connect to Postgres: {e}", file=sys.stderr)
             return None
 
     return None
@@ -76,10 +67,10 @@ def execute_query(query, params=(), db_path=None):
     Args:
         query (str): The SQL query to execute.
         params (tuple, optional): Parameters to substitute into the query. Defaults to ().
-        db_path (str, optional): Path to the database file. Defaults to shared.db_utils.DB_PATH.
+        db_path (str, optional): Ignored.
 
     Returns:
-        list: A list of sqlite3.Row objects.
+        list: A list of RealDictRow objects (dict-like).
     """
     conn = get_db_connection(db_path)
     if conn:
@@ -89,7 +80,7 @@ def execute_query(query, params=(), db_path=None):
             results = cursor.fetchall()
             conn.close()
             return results
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             print(f"[ERROR] Query failed: {query} with params {params}. Error: {e}", file=sys.stderr)
             conn.close()
             return []
@@ -113,7 +104,7 @@ def log_system_event(service_name, log_level, message):
 
             cursor.execute("""
                 INSERT INTO system_logs (timestamp, service_name, log_level, message)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (timestamp, service_name, log_level, message))
 
             conn.commit()

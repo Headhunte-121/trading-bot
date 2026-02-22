@@ -3,7 +3,6 @@ Service: Risk Manager
 Role: Validates trade signals and calculates position sizing based on risk parameters.
 Dependencies: sqlite3, shared.db_utils, shared.config
 """
-import sqlite3
 import os
 import math
 import sys
@@ -82,7 +81,6 @@ class RiskManager:
         if not conn:
             return
 
-        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         try:
@@ -164,19 +162,19 @@ class RiskManager:
 
             # Execute batch updates
             if expired_updates:
-                expired_query = "UPDATE trade_signals SET status = 'EXPIRED' WHERE id = ?"
+                expired_query = "UPDATE trade_signals SET status = 'EXPIRED' WHERE id = %s"
                 cursor.executemany(expired_query, expired_updates)
                 log_system_event(self.service_name, "INFO", f"Expired {len(expired_updates)} stale signals.")
 
             if updates:
-                update_query = "UPDATE trade_signals SET size = ?, status = 'SIZED' WHERE id = ?"
+                update_query = "UPDATE trade_signals SET size = %s, status = 'SIZED' WHERE id = %s"
                 cursor.executemany(update_query, updates)
                 log_system_event(self.service_name, "INFO", f"Successfully sized {len(updates)} signals.")
 
             if expired_updates or updates:
                 conn.commit()
 
-        except sqlite3.Error as e:
+        except Exception as e:
             log_system_event(self.service_name, "ERROR", f"Database error: {e}")
             print(f"Database error: {e}", file=sys.stderr)
         except Exception as e:

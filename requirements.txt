@@ -17,6 +17,9 @@ scipy
 # Execution
 alpaca-py
 
+# Database
+psycopg2-binary
+
 # Dashboard
 streamlit
 matplotlib  # Required for pandas style.background_gradient

@@ -63,7 +63,7 @@ class TACalculator:
             query = """
                 SELECT close
                 FROM market_data
-                WHERE symbol = ? AND timeframe = '1d'
+                WHERE symbol = %s AND timeframe = '1d'
                 ORDER BY timestamp DESC
                 LIMIT 300
             """
@@ -115,7 +115,7 @@ class TACalculator:
             query = """
                 SELECT timestamp, open, high, low, close, volume
                 FROM market_data
-                WHERE symbol = ? AND timeframe = '5m'
+                WHERE symbol = %s AND timeframe = '5m'
                 ORDER BY timestamp DESC
                 LIMIT 3000
             """
@@ -223,12 +223,22 @@ class TACalculator:
                     # df.values.tolist() converts numpy types to python types (e.g. np.float64 -> float)
                     data_tuples = df_result.values.tolist()
 
-                    self.conn.executemany("""
-                        INSERT OR REPLACE INTO technical_indicators
+                    cursor = self.conn.cursor()
+                    cursor.executemany("""
+                        INSERT INTO technical_indicators
                         (symbol, timestamp, timeframe, rsi_14, sma_50, sma_200, lower_bb, vwap, atr_14, volume_sma_20)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (symbol, timestamp, timeframe) DO UPDATE SET
+                            rsi_14 = excluded.rsi_14,
+                            sma_50 = excluded.sma_50,
+                            sma_200 = excluded.sma_200,
+                            lower_bb = excluded.lower_bb,
+                            vwap = excluded.vwap,
+                            atr_14 = excluded.atr_14,
+                            volume_sma_20 = excluded.volume_sma_20
                     """, data_tuples)
                     self.conn.commit()
+                    cursor.close()
                     count += 1
 
             print(f"✅ {count} symbols calculated.")
